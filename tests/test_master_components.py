@@ -3,42 +3,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
 
 class MasterComponentsTest(unittest.TestCase):
-    def test_bench_runner_client_uses_configured_request_timeout_for_long_benchmarks(self):
-        from vllm_bench_platform.master.bench_client import BenchRunnerClient
-
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return b'{"success": true}'
-
-        calls = {}
-
-        def fake_urlopen(request, timeout):
-            calls["url"] = request.full_url
-            calls["timeout"] = timeout
-            calls["body"] = request.data
-            return FakeResponse()
-
-        with patch("vllm_bench_platform.master.bench_client.urlopen", fake_urlopen):
-            result = BenchRunnerClient(
-                base_url="http://127.0.0.1:18080",
-                request_timeout_seconds=615,
-            ).run_bench({"case_id": "s1-b1"})
-
-        self.assertTrue(result["success"])
-        self.assertEqual(calls["url"], "http://127.0.0.1:18080/run-bench")
-        self.assertEqual(calls["timeout"], 615)
-        self.assertEqual(json.loads(calls["body"].decode("utf-8")), {"case_id": "s1-b1"})
-
     def test_matrix_loader_reads_config_files_and_normalizes_bench_params(self):
         from vllm_bench_platform.master.matrix_loader import load_run_config_from_dir
 
@@ -100,12 +67,93 @@ class MasterComponentsTest(unittest.TestCase):
         container = pod["spec"]["containers"][0]
         self.assertEqual(container["image"], "registry.local/vllm:xpu")
         self.assertEqual(container["resources"]["requests"]["vendor.com/xpu"], 1)
+        self.assertIn("--tensor-parallel-size", container["args"])
+        self.assertIn("--pipeline-parallel-size", container["args"])
         env = {item["name"]: item["value"] for item in container["env"]}
         self.assertEqual(env.get("HF_HUB_DISABLE_XET"), "1")
         self.assertIn("--max-num-seqs", container["args"])
         self.assertIn("run-001", service["metadata"]["name"])
         self.assertIn("s1", service["metadata"]["name"])
         self.assertEqual(target_endpoint(run_config, serve_config), f"http://{service['metadata']['name']}:8000")
+
+    def test_controller_resource_planning_applies_before_creating_target_pod(self):
+        from vllm_bench_platform.master.master import run_controller
+
+        class CapturingKubernetes:
+            def __init__(self):
+                self.pod = None
+
+            def create_pod(self, manifest):
+                self.pod = manifest
+
+            def create_service(self, manifest): ...
+            def wait_pod_ready(self, name, namespace, timeout_seconds=600): return False
+            def pod_phase(self, name, namespace): return "Pending"
+            def pod_node_name(self, name, namespace): return "node-a"
+            def get_pod_logs(self, name, namespace): return ""
+            def get_pod_events(self, name, namespace): return ""
+            def delete_service(self, name, namespace): ...
+            def delete_pod(self, name, namespace): ...
+            def wait_pod_deleted(self, name, namespace, timeout_seconds=120): return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "configs"
+            metadata_dir = root / "model-metadata"
+            config_dir.mkdir()
+            metadata_dir.mkdir()
+            (config_dir / "serve_hparams.json").write_text(json.dumps([{"_benchmark_name": "s1"}]), encoding="utf-8")
+            (config_dir / "bench_hparams.json").write_text(json.dumps([{"_benchmark_name": "b1"}]), encoding="utf-8")
+            (config_dir / "vendor_profile.json").write_text(
+                json.dumps(
+                    {
+                        "vendor_name": "xpu",
+                        "target_vllm_image": "local/vllm:xpu",
+                        "resource_name": "vendor.com/xpu",
+                        "resource_count": 1,
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (config_dir / "model_config.json").write_text(
+                json.dumps(
+                    {
+                        "model_name": "qwen",
+                        "model_path": "/models/qwen",
+                        "served_model_name": "qwen",
+                        "trust_remote_code": True,
+                        "dtype": "float16",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (metadata_dir / "model.safetensors.index.json").write_text(
+                json.dumps({"metadata": {"total_size": 40_000_000_000}}),
+                encoding="utf-8",
+            )
+            (metadata_dir / "config.json").write_text(json.dumps({"num_attention_heads": 40}), encoding="utf-8")
+            k8s = CapturingKubernetes()
+
+            run_controller(
+                config_dir=config_dir,
+                results_root=root / "results",
+                work_dir=root / "work",
+                run_id="run-001",
+                namespace="bench",
+                k8s_client=k8s,
+                bench_client=object(),
+                release_sleep_seconds=0,
+                model_metadata_dir=metadata_dir,
+                target_gpu_memory_gb=24,
+            )
+
+        container = k8s.pod["spec"]["containers"][0]
+        self.assertEqual(container["resources"]["requests"]["vendor.com/xpu"], 4)
+        args = container["args"]
+        self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "4")
+        self.assertEqual(args[args.index("--pipeline-parallel-size") + 1], "1")
 
     def test_result_writer_creates_layout_summary_failed_and_best_config(self):
         from vllm_bench_platform.master.analyzer import write_best_config

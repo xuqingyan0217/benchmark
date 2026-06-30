@@ -1,25 +1,7 @@
-"""bench-runner 的核心压测执行逻辑。
+"""master-controller 内置的 vllm-bench 执行器。
 
-HTTP agent 和 master-controller 都围绕这里的纯函数协作：构造命令、拒绝错误 endpoint、
-持久化 raw 输出、返回结构化结果。这样单元测试无需启动真实 HTTP 服务或 vLLM 进程。
-
-维护约束：
-- bench-runner 只访问 target Service endpoint，绝不访问 target Pod IP 或 localhost。
-- localhost 检查放在执行命令前，是为了防止误把 bench-runner 自己当成 vLLM 服务压测。
-- 命令构造保留用户提交的 bench CLI flag，平台不主动改写 vllm-bench 参数语义。
-- `--re te` 兼容只为 reference 数据服务，真实输入仍应使用 `--request-rate`。
-- raw log 总是写入，即使 endpoint 非法、命令失败或 timeout，也要给运维人员留下证据。
-- raw json 在命令执行后写入，保存命令、stdout、stderr、exit code 和解析出的 metrics。
-- subprocess runner 可注入，测试不需要安装 vLLM 或访问真实 target。
-- `timeout_seconds` 是单 case 上限；master-controller 仍负责失败重试和 failed case 归档。
-- `num_prompts` 由 Master Job 环境变量传入，smoke 默认小值，完整压测可提高。
-- `model_path` 用于 tokenizer/数据构造，`served_model_name` 用于 OpenAI-compatible 请求。
-- 成功标准只看进程 exit code；指标缺失不强行判失败，因为 raw 输出可能仍有排障价值。
-- 失败类型使用现有 MVP 枚举字符串，避免 bench-runner 引入额外 schema 依赖循环。
-- work_dir 只保存临时执行上下文，不作为最终 artifact 返回。
-- 所有返回路径都是字符串，便于 HTTP JSON 序列化和 summary 写入。
-- 这里不做 prefix cache reset；不同 target 镜像是否支持该 endpoint 属于后续增强。
-- 如果后续改用 vllm-bench JSON 输出，应保持 `run_bench_case` 返回结构不变。
+新架构不再启动独立 bench-runner 容器，也不暴露 localhost HTTP agent。Master 容器直接
+调用镜像内的 `vllm-bench` 二进制，并把 raw log/raw json 写入 `/results/{run_id}`。
 """
 
 from __future__ import annotations
@@ -27,13 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-import shlex
 import subprocess
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 from vllm_bench_platform.backend.runtime_config import normalize_bench_params
-from vllm_bench_platform.bench_runner.result_parser import parse_vllm_bench_output
+from vllm_bench_platform.master.result_parser import parse_bench_metrics
 
 
 ProcessRunner = Callable[..., Any]
@@ -41,7 +22,7 @@ ProcessRunner = Callable[..., Any]
 
 @dataclass(frozen=True)
 class BenchRunRequest:
-    """master-controller 调用 `/run-bench` 的最小请求结构。"""
+    """一次 benchmark case 的执行请求。"""
 
     target_endpoint: str
     run_id: str
@@ -56,8 +37,49 @@ class BenchRunRequest:
         return f"{self.serve_benchmark_name}-{self.bench_benchmark_name}"
 
 
+class DirectBenchRunner:
+    """供 master-controller 调用的内置 runner。"""
+
+    def __init__(
+        self,
+        *,
+        results_root: str | Path,
+        work_dir: str | Path,
+        bench_binary: str = "vllm-bench",
+        timeout_seconds: int = 1800,
+        num_prompts: int = 10,
+        process_runner: ProcessRunner | None = None,
+    ):
+        self.results_root = Path(results_root)
+        self.work_dir = Path(work_dir)
+        self.bench_binary = bench_binary
+        self.timeout_seconds = timeout_seconds
+        self.num_prompts = num_prompts
+        self.process_runner = process_runner
+
+    def run_bench(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """执行 master-controller 传入的 benchmark case payload。"""
+        return run_bench_case(
+            BenchRunRequest(
+                target_endpoint=payload["target_endpoint"],
+                run_id=payload["run_id"],
+                serve_benchmark_name=payload["serve_benchmark_name"],
+                bench_benchmark_name=payload["bench_benchmark_name"],
+                bench_params=dict(payload.get("bench_params", {})),
+                model_path=payload.get("model_path", ""),
+                served_model_name=payload.get("served_model_name", ""),
+            ),
+            results_root=self.results_root,
+            work_dir=self.work_dir,
+            bench_binary=self.bench_binary,
+            timeout_seconds=self.timeout_seconds,
+            num_prompts=self.num_prompts,
+            runner=self.process_runner,
+        )
+
+
 def is_localhost_endpoint(endpoint: str) -> bool:
-    """判断 endpoint 是否错误指向 bench-runner 自己。"""
+    """避免误把 master 容器自身当成 target vLLM 服务。"""
     host = urlparse(endpoint).hostname
     return host in {"localhost", "127.0.0.1", "::1"}
 
@@ -65,31 +87,33 @@ def is_localhost_endpoint(endpoint: str) -> bool:
 def build_vllm_bench_command(
     request: BenchRunRequest,
     *,
-    bench_command: str = "vllm bench serve",
+    bench_binary: str = "vllm-bench",
     num_prompts: int = 10,
+    result_dir: str | Path | None = None,
+    result_filename: str | None = None,
 ) -> list[str]:
-    """构造 vllm-bench 命令，保留用户提交的 bench CLI flag。"""
+    """构造 Rust vllm-bench 命令。"""
     params = normalize_bench_params(request.bench_params)
-    command = shlex.split(bench_command)
-    command.extend(
-        [
-            "--endpoint-type",
-            "openai-comp",
-            "--base-url",
-            request.target_endpoint,
-            "--model",
-            request.model_path,
-            "--served-model-name",
-            request.served_model_name,
-            "--dataset-name",
-            "random",
-            "--num-prompts",
-            str(num_prompts),
-            "--ignore-eos",
-            "--percentile-metrics",
-            "ttft,tpot,itl,e2el",
-        ]
-    )
+    command = [
+        bench_binary,
+        "--backend",
+        "vllm",
+        "--base-url",
+        request.target_endpoint,
+        "--model",
+        request.served_model_name or request.model_path,
+        "--dataset-name",
+        "random",
+        "--num-prompts",
+        str(num_prompts),
+        "--percentile-metrics",
+        "ttft,tpot,itl,e2el",
+        "--save-result",
+    ]
+    if result_dir is not None:
+        command.extend(["--result-dir", str(result_dir)])
+    if result_filename:
+        command.extend(["--result-filename", result_filename])
     for key, value in params.items():
         if key == "_benchmark_name":
             continue
@@ -104,7 +128,7 @@ def run_bench_case(
     *,
     results_root: str | Path,
     work_dir: str | Path,
-    bench_command: str = "vllm bench serve",
+    bench_binary: str = "vllm-bench",
     timeout_seconds: int = 1800,
     num_prompts: int = 10,
     runner: ProcessRunner | None = None,
@@ -135,8 +159,10 @@ def run_bench_case(
 
     command = build_vllm_bench_command(
         request,
-        bench_command=bench_command,
+        bench_binary=bench_binary,
         num_prompts=num_prompts,
+        result_dir=raw_json_dir,
+        result_filename=f"{request.case_id}.json",
     )
     try:
         completed = runner(
@@ -164,21 +190,24 @@ def run_bench_case(
     returncode = int(getattr(completed, "returncode", 0))
     combined = stdout + ("\n" if stdout and stderr else "") + stderr
     log_path.write_text(combined, encoding="utf-8")
-    metrics = parse_vllm_bench_output(combined)
-    payload = {
+
+    saved_payload = _read_saved_result(json_path)
+    metrics = parse_bench_metrics(saved_payload, combined)
+    raw_payload = {
         "command": command,
         "metrics": metrics,
         "exit_code": returncode,
         "stdout": stdout,
         "stderr": stderr,
+        "vllm_bench_result": saved_payload,
     }
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    json_path.write_text(json.dumps(raw_payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     if returncode != 0:
         return {
             "success": False,
             "exit_code": returncode,
             "error_type": "BENCH_COMMAND_FAILED",
-            "error_message": f"vllm bench exited with {returncode}",
+            "error_message": f"vllm-bench exited with {returncode}",
             "raw_log_path": str(log_path),
             "raw_json_path": str(json_path),
             "metrics": metrics,
@@ -192,14 +221,12 @@ def run_bench_case(
     }
 
 
-def request_from_payload(payload: dict[str, Any]) -> BenchRunRequest:
-    """把 HTTP JSON payload 转为 BenchRunRequest。"""
-    return BenchRunRequest(
-        target_endpoint=payload["target_endpoint"],
-        run_id=payload["run_id"],
-        serve_benchmark_name=payload["serve_benchmark_name"],
-        bench_benchmark_name=payload["bench_benchmark_name"],
-        bench_params=dict(payload.get("bench_params", {})),
-        model_path=payload.get("model_path", ""),
-        served_model_name=payload.get("served_model_name", ""),
-    )
+def _read_saved_result(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return {}
+    if "\n" in text:
+        return json.loads(text.splitlines()[-1])
+    return json.loads(text)

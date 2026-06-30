@@ -49,15 +49,7 @@ class FakeKubernetesClient:
 
 class FakeBenchClient:
     def __init__(self):
-        self.health_checks = 0
-        self.health_timeouts = []
         self.calls = []
-        self.shutdown_called = False
-
-    def wait_health(self, timeout_seconds=120):
-        self.health_checks += 1
-        self.health_timeouts.append(timeout_seconds)
-        return True
 
     def run_bench(self, request):
         self.calls.append(request)
@@ -73,15 +65,26 @@ class FakeBenchClient:
             "exit_code": 0,
             "raw_json_path": f"/results/run-001/raw_json/{request['case_id']}.json",
             "raw_log_path": f"/results/run-001/raw_logs/{request['case_id']}.log",
-            "metrics": {
-                "successful_requests": 10,
-                "total_token_throughput": 100.0,
-                "e2el_mean_ms": 10.0,
-            },
-        }
+                "metrics": {
+                    "successful_requests": 10,
+                    "total_token_throughput": 100.0,
+                    "e2el_mean_ms": 10.0,
+                },
+            }
 
-    def shutdown(self):
-        self.shutdown_called = True
+
+def write_model_metadata(root: Path, *, total_size=1_000_000_000, heads=16) -> Path:
+    metadata_dir = root / "model-metadata"
+    metadata_dir.mkdir()
+    (metadata_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": total_size}}),
+        encoding="utf-8",
+    )
+    (metadata_dir / "config.json").write_text(
+        json.dumps({"num_attention_heads": heads}),
+        encoding="utf-8",
+    )
+    return metadata_dir
 
 
 class MasterControllerLoopTest(unittest.TestCase):
@@ -119,6 +122,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                         "resource_count": 1,
                         "port": 8000,
                         "health_path": "/health",
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
                     }
                 ),
                 encoding="utf-8",
@@ -137,6 +142,7 @@ class MasterControllerLoopTest(unittest.TestCase):
             )
             k8s = FakeKubernetesClient()
             bench = FakeBenchClient()
+            metadata_dir = write_model_metadata(root)
 
             run_controller(
                 config_dir=config_dir,
@@ -147,7 +153,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=bench,
                 release_sleep_seconds=0,
-                bench_health_timeout_seconds=300,
+                model_metadata_dir=metadata_dir,
+                target_gpu_memory_gb=8,
             )
 
             summary = (root / "results" / "run-001" / "summary.jsonl").read_text(encoding="utf-8").splitlines()
@@ -157,8 +164,6 @@ class MasterControllerLoopTest(unittest.TestCase):
         self.assertEqual(len(k8s.created_services), 2)
         self.assertEqual(len(bench.calls), 5)
         self.assertEqual(len(summary), 4)
-        self.assertTrue(bench.shutdown_called)
-        self.assertEqual(bench.health_timeouts, [300])
         self.assertTrue(best_config["has_successful_case"])
         self.assertEqual(k8s.deleted_pods, k8s.created_pods)
 
@@ -180,6 +185,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                         "resource_count": 1,
                         "port": 8000,
                         "health_path": "/health",
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
                     }
                 ),
                 encoding="utf-8",
@@ -200,6 +207,7 @@ class MasterControllerLoopTest(unittest.TestCase):
             k8s.phase_after_ready_timeout = "Failed"
             k8s.wait_pod_ready = lambda name, namespace, timeout_seconds=600: False
             bench = FakeBenchClient()
+            metadata_dir = write_model_metadata(root)
 
             run_controller(
                 config_dir=config_dir,
@@ -210,6 +218,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=bench,
                 release_sleep_seconds=0,
+                model_metadata_dir=metadata_dir,
+                target_gpu_memory_gb=8,
             )
 
             failed = [
@@ -220,15 +230,32 @@ class MasterControllerLoopTest(unittest.TestCase):
         self.assertEqual(failed[0]["error_type"], "TARGET_POD_FAILED")
         self.assertEqual(failed[0]["case_id"], "s1-b1")
 
-    def test_controller_passes_request_timeout_to_real_bench_client(self):
+    def test_controller_configures_direct_bench_runner_from_arguments(self):
         from vllm_bench_platform.master.master import run_controller
 
-        created_timeouts = []
+        created_options = []
 
-        class CapturingBenchClient(FakeBenchClient):
-            def __init__(self, request_timeout_seconds=30):
+        class CapturingBenchRunner(FakeBenchClient):
+            def __init__(
+                self,
+                *,
+                results_root,
+                work_dir,
+                bench_binary="vllm-bench",
+                timeout_seconds=1800,
+                num_prompts=10,
+                process_runner=None,
+            ):
                 super().__init__()
-                created_timeouts.append(request_timeout_seconds)
+                created_options.append(
+                    {
+                        "results_root": str(results_root),
+                        "work_dir": str(work_dir),
+                        "bench_binary": bench_binary,
+                        "timeout_seconds": timeout_seconds,
+                        "num_prompts": num_prompts,
+                    }
+                )
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -245,6 +272,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                         "resource_count": 1,
                         "port": 8000,
                         "health_path": "/health",
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
                     }
                 ),
                 encoding="utf-8",
@@ -262,7 +291,7 @@ class MasterControllerLoopTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("vllm_bench_platform.master.master.BenchRunnerClient", CapturingBenchClient):
+            with patch("vllm_bench_platform.master.master.DirectBenchRunner", CapturingBenchRunner):
                 run_controller(
                     config_dir=config_dir,
                     results_root=root / "results",
@@ -271,10 +300,16 @@ class MasterControllerLoopTest(unittest.TestCase):
                     namespace="bench",
                     k8s_client=FakeKubernetesClient(),
                     release_sleep_seconds=0,
-                    bench_request_timeout_seconds=660,
+                    bench_binary="/usr/local/bin/vllm-bench",
+                    bench_timeout_seconds=660,
+                    bench_num_prompts=20,
+                    model_metadata_dir=write_model_metadata(root),
+                    target_gpu_memory_gb=8,
                 )
 
-        self.assertEqual(created_timeouts, [660])
+        self.assertEqual(created_options[0]["bench_binary"], "/usr/local/bin/vllm-bench")
+        self.assertEqual(created_options[0]["timeout_seconds"], 660)
+        self.assertEqual(created_options[0]["num_prompts"], 20)
 
 
 if __name__ == "__main__":

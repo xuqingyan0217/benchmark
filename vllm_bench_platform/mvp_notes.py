@@ -1,8 +1,7 @@
 """MVP 运行说明和维护约束。
 
 这个模块不提供运行时代码，只把最小 K8s 压测闭环中的领域约束放在源码树内。
-项目有明确的源码注释率门禁，原因不是追求形式上的行数，而是这里涉及 Kubernetes、
-国产卡 runtime、vLLM server、bench-runner、PVC 结果目录和失败归档等多方协作。
+这里涉及 Kubernetes、国产卡 runtime、vLLM server、bench-runner、PVC 结果目录和失败归档等多方协作。
 这些约束如果只留在一次性对话或外部设计文档里，后续维护者很容易误改边界。
 
 MVP 架构总览：
@@ -329,7 +328,6 @@ Kubernetes Service 设计：
 - controller loop 测试验证 bench_config 不重建 target。
 - controller loop 测试验证 serve_config 会清理 target。
 - controller loop 测试验证失败重试。
-- comment ratio 测试保证领域约束留在源码旁边。
 - unittest discover 是当前主验证命令。
 - pytest 不是当前环境依赖。
 - kubectl smoke 需要真实镜像和模型路径。
@@ -344,10 +342,10 @@ Smoke 运行注意事项：
 - 调整 BENCH_RUNNER_IMAGE。
 - 调整 TARGET_VLLM_IMAGE。
 - 调整 TARGET_RESOURCE_NAME。
-- 调整 TARGET_RESOURCE_COUNT。
+- 调整 TARGET_GPU_MEMORY_GB 和 MODEL_METADATA_HOST_PATH。
 - 调整 MODEL_PATH。
 - 调整 SERVED_MODEL_NAME。
-- 调整 RESULTS_HOST_PATH。
+- 调整 PERSIST_ROOT。
 - 确认 kubectl current-context 指向目标集群。
 - 确认目标 namespace 可创建资源。
 - 确认节点能拉取 Master 镜像。
@@ -361,7 +359,7 @@ Smoke 运行注意事项：
 - smoke 默认 BENCH_NUM_PROMPTS 为 10。
 - 提交后用 kubectl logs 查看 master-controller。
 - 提交后用 kubectl logs 查看 bench-runner。
-- 结果在 RESULTS_HOST_PATH/{run_id}。
+- 结果在 {PERSIST_ROOT}/{namespace}/{run_id}。
 - 如果 Job 失败，先看 server_logs 和 events。
 - 如果 bench 失败，先看 raw_logs。
 - 如果 target Pending，先看 events。
@@ -409,7 +407,6 @@ Smoke 运行注意事项：
 - 不要让 failed_cases.jsonl 使用自由拼写的 error_type。
 - 不要把 env 示例中的镜像当作生产默认保证。
 - 不要把 hostPath smoke 方案误认为多节点生产存储方案。
-- 不要把 comment ratio 文档当作可删除噪音；它承载跨模块约束。
 
 任务完成边界：
 - 2.6 在代码中由 submit_run 和 KubectlSubmitClient 覆盖。
@@ -466,7 +463,6 @@ Smoke 运行注意事项：
 
 验收口径：
 - 单元测试通过代表代码契约可用。
-- 注释率通过代表维护约束已随源码保存。
 - smoke 提交命令能创建 Job 代表后端到 Kubernetes 的链路可用。
 - Master Job 进入 Running 代表双容器 Pod 可调度。
 - bench-runner health 成功代表本地 agent 可用。

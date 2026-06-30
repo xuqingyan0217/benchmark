@@ -1,7 +1,7 @@
 """target Service manifest 构造。
 
 维护约束：
-- bench-runner 必须通过 Service 名称访问 target，不能使用 localhost 或 Pod IP。
+- master-controller 内置压测执行器必须通过 Service 名称访问 target，不能使用 localhost 或 Pod IP。
 - Service 名称包含 run_id 和 serve benchmark name，方便日志和事件定位。
 - selector 必须与 target Pod labels 完全一致，否则 health 和 bench 都会打到空 endpoints。
 - Service port 使用 vendor_profile.port，避免在多个 builder 中重复端口配置。
@@ -55,5 +55,5 @@ def build_target_service(run_config: RunConfig, serve_config: ServeConfig) -> di
 
 
 def target_endpoint(run_config: RunConfig, serve_config: ServeConfig) -> str:
-    """构造传给 bench-runner 的 Service endpoint。"""
+    """构造传给 vllm-bench 的 Service endpoint。"""
     return f"http://{target_service_name(run_config, serve_config)}:{run_config.vendor_profile.port}"

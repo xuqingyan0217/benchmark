@@ -4,7 +4,7 @@ backend 子包边界：
 - 接收用户 run 配置，并在提交前完成 schema 校验。
 - 构造 ConfigMap、PVC、Master Job 等 Kubernetes MVP 资源。
 - 当前阶段不直接执行 benchmark，也不在本地生成压测结果。
-- target vLLM Pod 和 bench-runner Pod 由后续 master-controller 编排。
+- target vLLM Pod 由后续 master-controller 编排。
 - builder 模块只返回 manifest dict，便于测试和替换实际 Kubernetes client。
 - submit 模块负责资源提交顺序，避免调用方散落 Kubernetes 创建逻辑。
 - 查询接口后续应只读取 run 状态和结果索引，不改变运行中的 benchmark。

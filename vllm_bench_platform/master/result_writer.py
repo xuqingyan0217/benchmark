@@ -6,7 +6,7 @@
 - summary.csv 给人工查看，summary.jsonl 给程序分析，两者需要记录同一 case 身份。
 - failed_cases.jsonl 只写重试后仍失败或 target 级失败的 case。
 - run_meta.json 记录 run 级上下文，方便脱离 Kubernetes 后仍能知道结果来源。
-- writer 不负责解析 vllm-bench 输出，metrics 应由 bench-runner 返回。
+- writer 不负责解析 vllm-bench 输出，metrics 应由 master 内置执行器返回。
 - writer 不负责选择 best_config，避免写入和分析职责耦合。
 - append 方法使用追加模式，controller 崩溃时已完成 case 的记录仍保留。
 - CSV 列固定，便于后续用户脚本消费；新增指标应同步更新测试和文档。

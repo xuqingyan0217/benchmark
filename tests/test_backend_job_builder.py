@@ -16,7 +16,7 @@ class JobBuilderTest(unittest.TestCase):
         self.assertEqual(manifest["metadata"]["name"], "vllm-bench-results-run-001")
         self.assertEqual(manifest["spec"]["accessModes"], ["ReadWriteOnce"])
 
-    def test_master_job_has_two_containers_without_accelerator_resources(self):
+    def test_master_job_has_single_container_without_accelerator_resources(self):
         from vllm_bench_platform.backend.job_builder import build_master_job
         from vllm_bench_platform.backend.submit_job import SubmitJobRequest
 
@@ -28,7 +28,7 @@ class JobBuilderTest(unittest.TestCase):
         container_names = {container["name"] for container in containers}
 
         self.assertEqual(manifest["kind"], "Job")
-        self.assertEqual(container_names, {"master-controller", "bench-runner"})
+        self.assertEqual(container_names, {"master-controller"})
         for container in containers:
             resources = container.get("resources", {})
             requests = resources.get("requests", {})
@@ -47,14 +47,14 @@ class JobBuilderTest(unittest.TestCase):
         volume_names = {volume["name"] for volume in pod_spec["volumes"]}
 
         self.assertEqual(volume_names, {"configs", "results", "work"})
-        for container in pod_spec["containers"]:
-            mount_paths = {
-                mount["name"]: mount["mountPath"]
-                for mount in container["volumeMounts"]
-            }
-            self.assertEqual(mount_paths["configs"], "/configs")
-            self.assertEqual(mount_paths["results"], "/results")
-            self.assertEqual(mount_paths["work"], "/work")
+        container = pod_spec["containers"][0]
+        mount_paths = {
+            mount["name"]: mount["mountPath"]
+            for mount in container["volumeMounts"]
+        }
+        self.assertEqual(mount_paths["configs"], "/configs")
+        self.assertEqual(mount_paths["results"], "/results/run-001")
+        self.assertEqual(mount_paths["work"], "/work")
 
 
 if __name__ == "__main__":

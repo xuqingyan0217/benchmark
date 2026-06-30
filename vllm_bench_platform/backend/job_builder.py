@@ -1,28 +1,26 @@
 """Master Job 和结果 PVC 的 Kubernetes manifest 构造器。
 
-OpenSpec 已经明确：后端只创建 ConfigMap、PVC、Master Job；
-target vLLM Pod 和 target Service 由 Master Pod 内的 master-controller 动态创建。
-因此本模块只描述 Master Pod 这一层资源，不把 target 资源混进来。
+后端只创建 ConfigMap、PVC、Master Job；target vLLM Pod 和 target Service
+由 Master Job 内的 master-controller 动态创建。本轮新架构把 bench 执行并入
+master-controller，因此 Master Pod 只保留一个容器。
 
 维护约束：
-- Master Pod 必须是双容器：master-controller 和 bench-runner。
-- 两个容器共享同一个网络命名空间，因此 controller 可以访问 localhost:18080。
-- bench-runner 不能通过 localhost 访问 target vLLM，因为 target 在另一个 Pod。
+- Master Pod 必须是单容器：master-controller。
+- master-controller 直接调用容器内的 `vllm-bench` 二进制。
 - target vLLM 访问入口必须由 master-controller 创建的 target Service 提供。
-- Master Pod 的两个容器都不能申请国产卡 accelerator resource。
-- 只有后续 target Pod builder 能写入 vendor_profile.resource_name/resource_count。
+- Master 容器不能申请国产卡 accelerator resource。
+- 只有 target Pod builder 能写入 vendor_profile.resource_name/resource_count。
 - /configs 挂载 ConfigMap，作为四个 JSON 配置文件的只读输入。
 - /results 挂载 PVC，保存 summary、raw logs、server logs 和 best_config。
-- /work 使用 emptyDir，只做容器间临时协作，不作为最终结果目录。
-- PVC 默认 ReadWriteOnce，因为 MVP 只有同一个 Master Pod 内的两个容器写入。
-- 多 Worker Pod 并发写结果时，必须通过新 OpenSpec change 重新评估存储设计。
+- /work 使用 emptyDir，只做临时执行目录，不作为最终结果目录。
+- PVC 默认 ReadWriteOnce，因为 MVP 只有同一个 Master Pod 写入。
+- 多 Worker Pod 并发写结果时，必须重新评估存储设计。
 - serviceAccountName 固定为 vllm-bench-master，和 RBAC manifest 保持一致。
-- 镜像名当前是实现占位，后续发布流程可以通过配置或 Helm/Kustomize 覆盖。
+- Master 需要 Kubernetes API 操作能力；当前实现通过 kubectl 完成，后续可替换为 Python client。
 - Job backoffLimit 为 0，是为了让 controller 自己记录失败，而不是让 Kubernetes 盲重试。
 - 这里返回纯 dict，便于单元测试和 fake Kubernetes client 在无集群环境下验证。
 - 不在此处创建 Namespace/RBAC，是因为它们属于 manifests 阶段的集群准备资源。
 - 不在此处创建 target Service，是为了保持 backend 与 master-controller 的职责边界。
-- 修改此模块时，优先检查 job-submission 和 bench-runner-agent 两组 OpenSpec 场景。
 """
 
 from dataclasses import dataclass, field
@@ -36,17 +34,15 @@ class MasterJobOptions:
     """Master Job 中由外部发布环境决定的运行参数。"""
 
     master_image: str = "vllm-bench-platform/master:latest"
-    bench_runner_image: str = "vllm-bench-platform/bench-runner:latest"
-    bench_command: str = "vllm bench serve"
+    bench_binary: str = "vllm-bench"
     bench_timeout_seconds: int = 1800
     bench_num_prompts: int = 10
-    bench_runner_health_timeout_seconds: int = 120
-    bench_runner_request_timeout_seconds: int = 30
     master_memory_request: str = "256Mi"
     master_memory_limit: str = "512Mi"
-    bench_runner_memory_request: str = "256Mi"
-    bench_runner_memory_limit: str = "512Mi"
     pod_tolerations: list[dict[str, Any]] = field(default_factory=list)
+    model_metadata_host_path: str = ""
+    target_gpu_memory_gb: float = 0.0
+    model_metadata_mount_path: str = "/model-metadata"
 
 
 def build_namespace(namespace: str) -> dict[str, Any]:
@@ -195,18 +191,16 @@ def build_master_job(
     run_config: RunConfig,
     options: MasterJobOptions | None = None,
 ) -> dict[str, Any]:
-    """构造双容器 Master Job。
+    """构造单容器 Master Job。
 
-    Master Pod 是一次压测 run 的执行单元，包含：
-    - master-controller：控制 target vLLM Pod/Service 生命周期。
-    - bench-runner：在 localhost:18080 暴露轻量 vllm-bench agent。
-
-    这两个容器都不能申请国产卡资源；只有 target vLLM Pod 可以申请 accelerator。
+    Master Pod 是一次压测 run 的执行单元。master-controller 负责 target vLLM
+    Pod/Service 生命周期，也负责直接调用 vllm-bench。只有 target vLLM Pod 可以申请
+    accelerator。
     """
     options = options or MasterJobOptions()
     config_map_name = f"vllm-bench-config-{run_config.run_id}"
     pvc_name = f"vllm-bench-results-{run_config.run_id}"
-    # 三个挂载点分别对应配置输入、结果输出和临时协作目录。
+    # 三个挂载点分别对应配置输入、结果输出和临时工作目录。
     # /work 使用 emptyDir，避免临时文件污染最终结果目录。
     volumes = [
         {
@@ -226,11 +220,29 @@ def build_master_job(
             "emptyDir": {},
         },
     ]
+    if options.model_metadata_host_path:
+        volumes.append(
+            {
+                "name": "model-metadata",
+                "hostPath": {
+                    "path": options.model_metadata_host_path,
+                    "type": "Directory",
+                },
+            }
+        )
     volume_mounts = [
         {"name": "configs", "mountPath": "/configs"},
-        {"name": "results", "mountPath": "/results"},
+        {"name": "results", "mountPath": f"/results/{run_config.run_id}"},
         {"name": "work", "mountPath": "/work"},
     ]
+    if options.model_metadata_host_path:
+        volume_mounts.append(
+            {
+                "name": "model-metadata",
+                "mountPath": options.model_metadata_mount_path,
+                "readOnly": True,
+            }
+        )
     # 镜像名先使用占位默认值，真正镜像仓库会在后续部署/CI change 中确认。
     # 当前 builder 的重点是锁定 Pod 结构、挂载和资源申请规则。
     return {
@@ -266,17 +278,14 @@ def build_master_job(
                             "env": [
                                 {"name": "RUN_ID", "value": run_config.run_id},
                                 {"name": "NAMESPACE", "value": run_config.namespace},
-                                {
-                                    "name": "BENCH_RUNNER_HEALTH_TIMEOUT_SECONDS",
-                                    "value": str(options.bench_runner_health_timeout_seconds),
-                                },
-                                {
-                                    "name": "BENCH_RUNNER_REQUEST_TIMEOUT_SECONDS",
-                                    "value": str(options.bench_runner_request_timeout_seconds),
-                                },
+                                {"name": "BENCH_BINARY", "value": options.bench_binary},
+                                {"name": "BENCH_TIMEOUT_SECONDS", "value": str(options.bench_timeout_seconds)},
+                                {"name": "BENCH_NUM_PROMPTS", "value": str(options.bench_num_prompts)},
+                                {"name": "MODEL_METADATA_DIR", "value": options.model_metadata_mount_path},
+                                {"name": "TARGET_GPU_MEMORY_GB", "value": str(options.target_gpu_memory_gb)},
                             ],
                             "volumeMounts": volume_mounts,
-                            # 控制容器只需要 CPU/内存，不允许出现 vendor.com/xpu 等 accelerator。
+                            # Master 容器只需要 CPU/内存，不允许出现 vendor.com/xpu 等 accelerator。
                             "resources": {
                                 "requests": {
                                     "cpu": "100m",
@@ -284,39 +293,6 @@ def build_master_job(
                                 },
                                 "limits": {
                                     "memory": options.master_memory_limit,
-                                },
-                            },
-                        },
-                        {
-                            "name": "bench-runner",
-                            "image": options.bench_runner_image,
-                            "command": [
-                                "python3",
-                                "-m",
-                                "vllm_bench_platform.bench_runner.bench_agent",
-                            ],
-                            "env": [
-                                {"name": "BENCH_COMMAND", "value": options.bench_command},
-                                {"name": "BENCH_TIMEOUT_SECONDS", "value": str(options.bench_timeout_seconds)},
-                                {"name": "BENCH_NUM_PROMPTS", "value": str(options.bench_num_prompts)},
-                            ],
-                            # 18080 只在 Pod 网络命名空间内给 master-controller 调用，
-                            # 不需要额外创建 Service 暴露 bench-runner。
-                            "ports": [
-                                {
-                                    "containerPort": 18080,
-                                    "name": "http",
-                                }
-                            ],
-                            "volumeMounts": volume_mounts,
-                            # bench-runner 是压测客户端，不加载模型权重，也不申请国产卡资源。
-                            "resources": {
-                                "requests": {
-                                    "cpu": "100m",
-                                    "memory": options.bench_runner_memory_request,
-                                },
-                                "limits": {
-                                    "memory": options.bench_runner_memory_limit,
                                 },
                             },
                         },

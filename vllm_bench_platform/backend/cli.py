@@ -30,6 +30,8 @@ from vllm_bench_platform.backend.job_builder import (
     build_results_pv,
 )
 from vllm_bench_platform.backend.kubectl_client import KubectlSubmitClient
+from vllm_bench_platform.backend.manifest_renderer import render_manifests
+from vllm_bench_platform.backend.persist_paths import results_query_root, run_host_path
 from vllm_bench_platform.backend.query import get_run_status, list_result_files, read_failed_cases
 from vllm_bench_platform.backend.runtime_config import build_payload_from_files, load_env_config
 from vllm_bench_platform.backend.submit_job import SubmitJobRequest, submit_run
@@ -44,6 +46,13 @@ def main(argv: list[str] | None = None) -> int:
     submit_parser.add_argument("--serve-configs", required=True)
     submit_parser.add_argument("--bench-configs", required=True)
     submit_parser.add_argument("--run-id")
+
+    render_parser = subparsers.add_parser("render")
+    render_parser.add_argument("--env", required=True)
+    render_parser.add_argument("--serve-configs", required=True)
+    render_parser.add_argument("--bench-configs", required=True)
+    render_parser.add_argument("--run-id")
+    render_parser.add_argument("--output-dir")
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--env", required=True)
@@ -60,50 +69,76 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     env = load_env_config(args.env)
 
-    if args.command == "submit":
+    if args.command in {"submit", "render"}:
         payload = build_payload_from_files(
             env,
             args.serve_configs,
             args.bench_configs,
             run_id=args.run_id,
         )
+
+    if args.command == "render":
+        host_path = run_host_path(env.persist_root, payload["namespace"], payload["run_id"])
+        rendered = render_manifests(
+            payload,
+            host_path=host_path,
+            output_dir=args.output_dir,
+            master_options=_master_options_from_env(env),
+        )
+        print(
+            json.dumps(
+                {
+                    "run_id": rendered.run_id,
+                    "namespace": rendered.namespace,
+                    "output_dir": str(rendered.output_dir),
+                    "files": [str(path) for path in rendered.files],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "submit":
         request = SubmitJobRequest.from_payload(payload)
+        host_path = run_host_path(env.persist_root, request.run_config.namespace, request.run_config.run_id)
         client = KubectlSubmitClient()
         client.apply_manifest(build_namespace(request.run_config.namespace))
-        client.apply_manifest(build_results_pv(request.run_config, env.results_host_path))
+        client.apply_manifest(build_results_pv(request.run_config, host_path))
         for manifest in build_rbac_manifests(request.run_config.namespace):
             client.apply_manifest(manifest)
         response = submit_run(
             payload,
             client,
-            master_options=MasterJobOptions(
-                master_image=env.master_image,
-                bench_runner_image=env.bench_runner_image,
-                bench_command=env.bench_command,
-                bench_timeout_seconds=env.bench_timeout_seconds,
-                bench_num_prompts=env.bench_num_prompts,
-                bench_runner_health_timeout_seconds=env.bench_runner_health_timeout_seconds,
-                bench_runner_request_timeout_seconds=env.bench_runner_request_timeout_seconds,
-                master_memory_request=env.master_memory_request,
-                master_memory_limit=env.master_memory_limit,
-                bench_runner_memory_request=env.bench_runner_memory_request,
-                bench_runner_memory_limit=env.bench_runner_memory_limit,
-                pod_tolerations=env.pod_tolerations,
-            ),
+            master_options=_master_options_from_env(env),
         )
         print(json.dumps(response.__dict__, ensure_ascii=False, sort_keys=True))
         return 0
 
     if args.command == "status":
-        print(json.dumps(get_run_status(args.run_id, env.namespace, env.results_host_path), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(get_run_status(args.run_id, env.namespace, results_query_root(env.persist_root, env.namespace)), ensure_ascii=False, sort_keys=True))
         return 0
     if args.command == "results":
-        print(json.dumps(list_result_files(args.run_id, Path(env.results_host_path)), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(list_result_files(args.run_id, results_query_root(env.persist_root, env.namespace)), ensure_ascii=False, sort_keys=True))
         return 0
     if args.command == "failed-cases":
-        print(json.dumps(read_failed_cases(args.run_id, Path(env.results_host_path)), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(read_failed_cases(args.run_id, results_query_root(env.persist_root, env.namespace)), ensure_ascii=False, sort_keys=True))
         return 0
     return 1
+
+
+def _master_options_from_env(env) -> MasterJobOptions:
+    return MasterJobOptions(
+        master_image=env.master_image,
+        bench_binary=env.bench_binary,
+        bench_timeout_seconds=env.bench_timeout_seconds,
+        bench_num_prompts=env.bench_num_prompts,
+        master_memory_request=env.master_memory_request,
+        master_memory_limit=env.master_memory_limit,
+        pod_tolerations=env.pod_tolerations,
+        model_metadata_host_path=env.model_metadata_host_path,
+        target_gpu_memory_gb=env.target_gpu_memory_gb,
+    )
 
 
 if __name__ == "__main__":

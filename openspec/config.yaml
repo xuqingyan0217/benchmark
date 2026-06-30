@@ -12,9 +12,6 @@ context: |
     阶段性结论必须先写入项目文档，再进入实现。
   - 优先完成 MVP。未经确认，不允许擅自扩大范围。
   - 本项目文档、OpenSpec artifact、任务拆分和面向用户的说明默认使用中文。
-  - vllm_bench_platform/**/*.py 源码整体注释率不得低于 40%；注释必须解释业务意图、
-    OpenSpec 约束、Kubernetes 资源设计、失败处理或维护注意点，不能只机械复述代码。
-
   项目背景：
   - 平台运行在 Kubernetes 环境中，用于自动化压测国产 AI 加速卡上的 vLLM 服务。
   - 平台需要组合不同国产卡 vendor profile、vLLM 镜像、模型配置、服务端参数和压测参数。

@@ -46,6 +46,8 @@ class SharedSchemasTest(unittest.TestCase):
                 port=8000,
                 health_path="/health",
                 extra_serve_args=["--disable-log-requests"],
+                tensor_parallel_size=1,
+                pipeline_parallel_size=1,
             ),
             model_config=ModelConfig(
                 model_name="qwen",
@@ -96,6 +98,8 @@ class SharedSchemasTest(unittest.TestCase):
                     port=8000,
                     health_path="/health",
                     extra_serve_args=[],
+                    tensor_parallel_size=1,
+                    pipeline_parallel_size=1,
                 ),
                 model_config=ModelConfig(
                     model_name="qwen",
@@ -104,6 +108,19 @@ class SharedSchemasTest(unittest.TestCase):
                     trust_remote_code=True,
                     dtype="float16",
                 ),
+            )
+
+    def test_vendor_profile_requires_parallel_product_to_match_resource_count(self):
+        from vllm_bench_platform.schemas import ValidationError, VendorProfile
+
+        with self.assertRaisesRegex(ValidationError, "tensor_parallel_size"):
+            VendorProfile(
+                vendor_name="xpu",
+                target_vllm_image="registry.local/vllm:xpu",
+                resource_name="vendor.com/xpu",
+                resource_count=4,
+                tensor_parallel_size=2,
+                pipeline_parallel_size=1,
             )
 
     def test_failed_case_schema_requires_standard_error_type_and_fields(self):

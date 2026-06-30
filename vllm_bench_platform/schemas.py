@@ -1,6 +1,6 @@
 """平台共享数据结构与校验规则。
 
-这些 schema 是 backend、master-controller、bench-runner 之间的共同契约。
+这些 schema 是 backend 和 master-controller 之间的共同契约。
 MVP 阶段优先使用标准库 dataclass，避免在早期把实现绑定到某个 Web 框架或校验库。
 
 这里的校验只覆盖 OpenSpec 已确认的 MVP 规则：
@@ -10,7 +10,7 @@ MVP 阶段优先使用标准库 dataclass，避免在早期把实现绑定到某
 - schema 层只表达“数据是否满足平台契约”，不创建 Kubernetes 资源。
 - backend builder 负责把这些结构翻译成 ConfigMap、PVC、Job 等 manifest。
 - master-controller 后续负责把这些结构展开成 serve_config x bench_config 矩阵。
-- bench-runner 后续只消费 bench case，不应该反向修改 run 级配置。
+- benchmark 执行器只消费 bench case，不应该反向修改 run 级配置。
 - `_benchmark_name` 是贯穿结果归档、Service 命名和失败记录的身份字段。
 - serve_config 变化代表服务端参数变化，必须重建 target vLLM Pod。
 - bench_config 变化代表请求形态变化，不应该重启 target vLLM Pod。
@@ -104,6 +104,8 @@ class VendorProfile:
     port: int = 8000
     health_path: str = "/health"
     extra_serve_args: list[str] = field(default_factory=list)
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
 
     def __post_init__(self) -> None:
         # resource_count 必须为正，避免生成无法调度或语义不明确的 target Pod。
@@ -112,6 +114,12 @@ class VendorProfile:
         _require_text("resource_name", self.resource_name)
         if self.resource_count <= 0:
             raise ValidationError("resource_count 必须大于 0")
+        if self.tensor_parallel_size <= 0:
+            raise ValidationError("tensor_parallel_size must be greater than 0")
+        if self.pipeline_parallel_size <= 0:
+            raise ValidationError("pipeline_parallel_size must be greater than 0")
+        if self.tensor_parallel_size * self.pipeline_parallel_size != self.resource_count:
+            raise ValidationError("tensor_parallel_size * pipeline_parallel_size must equal resource_count")
         if not 1 <= self.port <= 65535:
             raise ValidationError("port 必须在 1 到 65535 之间")
         _require_text("health_path", self.health_path)

@@ -2,7 +2,7 @@
 
 维护约束：
 - 只有这个 builder 可以把 vendor resource_name/resource_count 写入容器资源申请。
-- master-controller 和 bench-runner 的 Job builder 绝不能复制这里的 accelerator 逻辑。
+- Master Job builder 绝不能复制这里的 accelerator 逻辑。
 - target Pod 运行被测 vLLM server，不直接写 `/results`，结果统一由 Master Pod 管理。
 - serve_config.params 保留 CLI flag 形式，按原样追加到 vLLM server 命令。
 - model_config 描述模型加载，不能混入 bench 请求参数。
@@ -47,6 +47,10 @@ def build_target_pod(run_config: RunConfig, serve_config: ServeConfig) -> dict[s
         model.served_model_name,
         "--dtype",
         model.dtype,
+        "--tensor-parallel-size",
+        str(vendor.tensor_parallel_size),
+        "--pipeline-parallel-size",
+        str(vendor.pipeline_parallel_size),
     ]
     if model.trust_remote_code:
         args.append("--trust-remote-code")

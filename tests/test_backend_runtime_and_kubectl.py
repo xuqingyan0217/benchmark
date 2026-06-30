@@ -5,6 +5,18 @@ import unittest
 
 
 class BackendRuntimeAndKubectlTest(unittest.TestCase):
+    def test_persist_paths_use_namespace_and_run_id(self):
+        from vllm_bench_platform.backend.persist_paths import results_query_root, run_host_path
+
+        self.assertEqual(
+            run_host_path("/tmp/vllm-bench", "bench", "run-001"),
+            "/tmp/vllm-bench/bench/run-001",
+        )
+        self.assertEqual(
+            results_query_root("/tmp/vllm-bench", "bench"),
+            Path("/tmp/vllm-bench") / "bench",
+        )
+
     def test_env_file_builds_submit_payload_and_normalizes_reference_typo(self):
         from vllm_bench_platform.backend.runtime_config import (
             build_payload_from_files,
@@ -19,23 +31,19 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
                     [
                         "NAMESPACE=bench",
                         "MASTER_IMAGE=local/master:dev",
-                        "BENCH_RUNNER_IMAGE=local/bench:dev",
                         "TARGET_VLLM_IMAGE=local/vllm:xpu",
                         "TARGET_RESOURCE_NAME=vendor.com/xpu",
-                        "TARGET_RESOURCE_COUNT=2",
+                        "TARGET_GPU_MEMORY_GB=24",
+                        "MODEL_METADATA_HOST_PATH=/models/qwen",
                         "MODEL_PATH=/models/qwen",
                         "SERVED_MODEL_NAME=qwen",
                         "DTYPE=float16",
-                        "RESULTS_HOST_PATH=/tmp/vllm-bench-results",
-                        "BENCH_COMMAND=vllm bench serve",
+                        "PERSIST_ROOT=/tmp/vllm-bench",
+                        "BENCH_BINARY=/usr/local/bin/vllm-bench",
                         "BENCH_TIMEOUT_SECONDS=30",
                         "BENCH_NUM_PROMPTS=10",
-                        "BENCH_RUNNER_HEALTH_TIMEOUT_SECONDS=300",
-                        "BENCH_RUNNER_REQUEST_TIMEOUT_SECONDS=660",
                         "MASTER_MEMORY_REQUEST=256Mi",
                         "MASTER_MEMORY_LIMIT=512Mi",
-                        "BENCH_RUNNER_MEMORY_REQUEST=1Gi",
-                        "BENCH_RUNNER_MEMORY_LIMIT=2Gi",
                         "TARGET_ENV_JSON={\"HF_HUB_DISABLE_XET\":\"1\"}",
                         "POD_TOLERATIONS_JSON=[{\"key\":\"node-role.kubernetes.io/control-plane\",\"operator\":\"Exists\",\"effect\":\"NoSchedule\"}]",
                     ]
@@ -72,12 +80,14 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
             payload = build_payload_from_files(env, serve_path, bench_path, run_id="run-001")
 
         self.assertEqual(env.namespace, "bench")
-        self.assertEqual(env.bench_runner_health_timeout_seconds, 300)
-        self.assertEqual(env.bench_runner_request_timeout_seconds, 660)
-        self.assertEqual(env.bench_runner_memory_limit, "2Gi")
+        self.assertEqual(env.bench_binary, "/usr/local/bin/vllm-bench")
         self.assertEqual(payload["namespace"], "bench")
         self.assertEqual(payload["vendor_profile"]["target_vllm_image"], "local/vllm:xpu")
-        self.assertEqual(payload["vendor_profile"]["resource_count"], 2)
+        self.assertEqual(env.target_gpu_memory_gb, 24)
+        self.assertEqual(env.model_metadata_host_path, "/models/qwen")
+        self.assertEqual(payload["vendor_profile"]["resource_count"], 1)
+        self.assertEqual(payload["vendor_profile"]["tensor_parallel_size"], 1)
+        self.assertEqual(payload["vendor_profile"]["pipeline_parallel_size"], 1)
         self.assertEqual(payload["vendor_profile"]["env"]["HF_HUB_DISABLE_XET"], "1")
         self.assertEqual(
             payload["vendor_profile"]["tolerations"],
@@ -100,22 +110,17 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
 
         run_config = SubmitJobRequest.from_payload(valid_payload()).run_config
         namespace = build_namespace("bench")
-        pv = build_results_pv(run_config, host_path="/tmp/vllm-bench-results")
+        pv = build_results_pv(run_config, host_path="/tmp/vllm-bench/bench/run-001")
         rbac = build_rbac_manifests("bench")
         job = build_master_job(
             run_config,
             MasterJobOptions(
                 master_image="local/master:dev",
-                bench_runner_image="local/bench:dev",
-                bench_command="vllm bench serve",
+                bench_binary="/usr/local/bin/vllm-bench",
                 bench_timeout_seconds=30,
                 bench_num_prompts=10,
-                bench_runner_health_timeout_seconds=300,
-                bench_runner_request_timeout_seconds=660,
                 master_memory_request="256Mi",
                 master_memory_limit="512Mi",
-                bench_runner_memory_request="1Gi",
-                bench_runner_memory_limit="2Gi",
                 pod_tolerations=[
                     {
                         "key": "node-role.kubernetes.io/control-plane",
@@ -123,12 +128,14 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
                         "effect": "NoSchedule",
                     }
                 ],
+                model_metadata_host_path="/models/qwen",
+                target_gpu_memory_gb=24,
             ),
         )
 
         self.assertEqual(namespace["kind"], "Namespace")
         self.assertEqual(pv["kind"], "PersistentVolume")
-        self.assertEqual(pv["spec"]["hostPath"]["path"], "/tmp/vllm-bench-results")
+        self.assertEqual(pv["spec"]["hostPath"]["path"], "/tmp/vllm-bench/bench/run-001")
         role = next(item for item in rbac if item["kind"] == "Role")
         role_resources = {tuple(rule["resources"]) for rule in role["rules"]}
         self.assertIn(("pods",), role_resources)
@@ -139,20 +146,21 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
             for container in job["spec"]["template"]["spec"]["containers"]
         }
         self.assertEqual(containers["master-controller"]["image"], "local/master:dev")
-        self.assertEqual(containers["bench-runner"]["image"], "local/bench:dev")
-        self.assertEqual(containers["bench-runner"]["resources"]["requests"]["memory"], "1Gi")
-        self.assertEqual(containers["bench-runner"]["resources"]["limits"]["memory"], "2Gi")
-        bench_env = {
-            item["name"]: item["value"]
-            for item in containers["bench-runner"]["env"]
-        }
-        self.assertEqual(bench_env["BENCH_NUM_PROMPTS"], "10")
+        self.assertNotIn("bench-runner", containers)
         master_env = {
             item["name"]: item["value"]
             for item in containers["master-controller"]["env"]
         }
-        self.assertEqual(master_env["BENCH_RUNNER_HEALTH_TIMEOUT_SECONDS"], "300")
-        self.assertEqual(master_env["BENCH_RUNNER_REQUEST_TIMEOUT_SECONDS"], "660")
+        self.assertEqual(master_env["BENCH_BINARY"], "/usr/local/bin/vllm-bench")
+        self.assertEqual(master_env["BENCH_TIMEOUT_SECONDS"], "30")
+        self.assertEqual(master_env["BENCH_NUM_PROMPTS"], "10")
+        self.assertEqual(master_env["MODEL_METADATA_DIR"], "/model-metadata")
+        self.assertEqual(master_env["TARGET_GPU_MEMORY_GB"], "24")
+        volume_names = {volume["name"] for volume in job["spec"]["template"]["spec"]["volumes"]}
+        self.assertIn("model-metadata", volume_names)
+        mount_paths = {mount["name"]: mount for mount in containers["master-controller"]["volumeMounts"]}
+        self.assertEqual(mount_paths["model-metadata"]["mountPath"], "/model-metadata")
+        self.assertTrue(mount_paths["model-metadata"]["readOnly"])
         self.assertIn("python3", containers["master-controller"]["command"])
         self.assertEqual(
             job["spec"]["template"]["spec"]["tolerations"],
@@ -195,7 +203,7 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
             return "{}"
 
         with tempfile.TemporaryDirectory() as tmp:
-            result_root = Path(tmp)
+            result_root = Path(tmp) / "bench"
             run_root = result_root / "run-001"
             (run_root / "raw_logs").mkdir(parents=True)
             (run_root / "summary.csv").write_text("header\n", encoding="utf-8")

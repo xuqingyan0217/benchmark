@@ -11,7 +11,6 @@ class ProjectSkeletonTest(unittest.TestCase):
             ROOT / "vllm_bench_platform",
             ROOT / "vllm_bench_platform" / "backend",
             ROOT / "vllm_bench_platform" / "master",
-            ROOT / "vllm_bench_platform" / "bench_runner",
             ROOT / "configs",
             ROOT / "manifests",
             ROOT / "docker",
@@ -25,7 +24,6 @@ class ProjectSkeletonTest(unittest.TestCase):
             ROOT / "vllm_bench_platform" / "__init__.py",
             ROOT / "vllm_bench_platform" / "backend" / "__init__.py",
             ROOT / "vllm_bench_platform" / "master" / "__init__.py",
-            ROOT / "vllm_bench_platform" / "bench_runner" / "__init__.py",
         ]
 
         for path in expected_package_markers:
@@ -46,7 +44,7 @@ class ProjectSkeletonTest(unittest.TestCase):
             ROOT / "vllm_bench_platform" / "backend" / "cli.py",
             ROOT / "vllm_bench_platform" / "backend" / "api.py",
             ROOT / "vllm_bench_platform" / "master" / "master.py",
-            ROOT / "vllm_bench_platform" / "bench_runner" / "bench_agent.py",
+            ROOT / "vllm_bench_platform" / "master" / "bench_runner.py",
         ]
 
         implemented_modules = [path for path in runtime_modules if path.name != "api.py"]

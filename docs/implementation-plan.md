@@ -1,0 +1,161 @@
+# vLLM Bench Platform 后续实施计划
+
+本文用于跟踪 README 后续 TODO 的落地。原则：按新要求直接改造，不做旧版双容器 bench-agent 架构的向后兼容。
+
+## 总体目标
+
+新执行链路：
+
+```text
+本地 backend render -> 生成完整 YAML -> 远端 kubectl apply -> Master Job 单容器
+  -> master-controller 创建 target Pod/Service
+  -> master-controller 直接调用 vllm-bench 二进制
+  -> 结果写入统一持久化目录
+```
+
+最终镜像：
+
+- `MASTER_IMAGE`：包含平台 master 代码、Kubernetes 操作能力、`vllm-bench` 二进制。
+- `TARGET_VLLM_IMAGE`：被测 vLLM 服务镜像，申请测试卡资源。
+
+不再保留：
+
+- `BENCH_RUNNER_IMAGE`
+- `bench-runner` 容器
+- `bench_agent.py` HTTP agent
+- `localhost:18080` agent 通信
+- 旧 `vllm bench serve` Python CLI 调用路径
+
+## 关于 Master 镜像为什么还有 kubectl
+
+Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
+
+- 按每组 `serve_hparams` 创建 target vLLM Pod。
+- 创建 target Service。
+- 等待 target Pod ready。
+- 访问 target health endpoint。
+- 抓取 target logs 和 events。
+- 删除 target Service/Pod。
+
+因此 Master 需要的是“Kubernetes API 操作能力”，不是必须依赖 `kubectl` 本身。
+
+当前项目的 `KubectlMasterClient` 已经用 `kubectl apply/get/delete/logs/wait` 跑通最小闭环，所以第一阶段继续保留 `kubectl`，以降低本轮架构切换风险。后续可以单独做一批，把它替换为：
+
+- Kubernetes Python client；或
+- in-cluster service account token + Kubernetes REST API。
+
+替换标准：上层 `master.master` 的编排语义不变，只替换 `k8s_client` 实现。
+
+## 分批计划
+
+### 第 1 批：Master 单容器架构
+
+目标：Master Job 只包含 `master-controller` 一个容器，bench 执行逻辑并入 master。
+
+任务：
+
+- [x] 删除 `MasterJobOptions.bench_runner_image`。
+- [x] 删除 `BENCH_RUNNER_IMAGE` 相关 env 读取与文档。
+- [x] 删除 bench-runner memory request/limit 配置。
+- [x] 删除 bench-runner health/request timeout 配置。
+- [x] `build_master_job` 只生成 `master-controller` 容器。
+- [x] Master Job 继续挂载 `/configs`、`/results`、`/work`。
+- [x] Master 容器不申请测试卡资源。
+- [x] 更新相关单元测试。
+
+验收：
+
+- Master Job manifest 只有一个 container。
+- 代码中无 `localhost:18080` 执行依赖。
+- 代码中无 `BENCH_RUNNER_IMAGE` 配置依赖。
+
+### 第 2 批：master 直接调用 vllm-bench
+
+目标：master-controller 直接执行 `vllm-bench` 二进制并写结果。
+
+任务：
+
+- [x] 将 `run_bench_case` 逻辑迁移到 master 可直接调用的模块。
+- [x] 命令从 `vllm bench serve` 改为 `vllm-bench`。
+- [x] 使用 `--backend vllm`、`--base-url <target-service>`、`--model <served-model-name>`。
+- [x] 支持 `--save-result` 和明确的 result filename。
+- [x] raw log 写入 `/results/{run_id}/raw_logs/`。
+- [x] raw json 写入 `/results/{run_id}/raw_json/`。
+- [x] 失败、超时、结果缺失都写入结构化失败信息。
+- [x] 删除 `bench_agent.py` 和 `master/bench_client.py`。
+
+验收：
+
+- 成功 case 写 summary。
+- 失败 case 最多重试一次，最终写 `failed_cases.jsonl`。
+- `vllm-bench` 命令可在测试中注入 fake runner 验证。
+
+### 第 3 批：backend 生成完整 YAML
+
+目标：本地 backend 只负责生成可搬运 YAML，不要求本地能访问远端 Kubernetes。
+
+任务：
+
+- [x] 新增 `render` 命令。
+- [x] 输出目录默认 `manifests/generated/{run_id}/`。
+- [x] 生成完整 apply 顺序：
+  - [x] `00-namespace.yaml`
+  - [x] `01-rbac.yaml`
+  - [x] `02-pv.yaml`
+  - [x] `03-pvc.yaml`
+  - [x] `04-configmap.yaml`
+  - [x] `05-master-job.yaml`
+- [x] 所有资源使用同一个测试 namespace。
+- [x] 保留查询命令，但提交命令后续可弱化或删除。
+
+验收：
+
+- 本地执行 backend 后拿到完整 YAML。
+- YAML 拷到测试线后可按顺序 apply。
+- ConfigMap 内容包含本次 run 所有配置。
+
+### 第 4 批：GPU / TP / PP 动态计算
+
+目标：用 master Pod 内的动态资源规划替代写死 GPU 数量与并行参数，backend 只负责挂载模型 metadata 目录。
+
+任务：
+
+- [x] 将 `reference/helper/cal_gpu.py` 整理进正式模块。
+- [x] 将 `reference/helper/cal_tp_pp.py` 整理进正式模块。
+- [x] 从模型目录读取 `model.safetensors.index.json`。
+- [x] 从模型目录读取 `config.json`。
+- [x] 将模型 metadata 目录挂载到 Master Pod。
+- [x] 根据单卡显存估算 GPU 数量。
+- [x] 根据 attention heads 和 GPU 数量计算 TP/PP。
+- [x] target Pod resource 使用动态 GPU 数量。
+- [x] vLLM serve args 注入 `--tensor-parallel-size` 和 `--pipeline-parallel-size`。
+
+验收：
+
+- `TP * PP == GPU_COUNT`。
+- TP 能整除 attention heads。
+- 缺少必要模型 metadata 时直接失败。
+
+### 第 5 批：统一持久化目录
+
+目标：PVC、hostPath 和后续持久化盘都归到同一个根目录，方便统一删除。
+
+任务：
+
+- [x] 引入统一根路径 `PERSIST_ROOT`。
+- [x] 每次 run 使用 `{PERSIST_ROOT}/{namespace}/{run_id}/`。
+- [x] results 挂载和查询路径统一到该 run 根目录下。
+- [x] 后续 cache/model/artifacts 也放在同一 run 根目录。
+- [x] 更新 README 和排障说明。
+
+验收：
+
+- 删除一个 run 只需要删除一个目录树和一组 Kubernetes 资源。
+- 结果查询不再依赖零散路径。
+
+## 当前执行顺序
+
+1. 第 1 批和第 2 批一起落地，因为它们是同一个架构拐点。
+2. 跑通测试后，再进入第 3 批 YAML 生成。
+3. 第 4 批资源规划依赖新的 target args 注入点。
+4. 第 5 批统一持久化目录作为收口。

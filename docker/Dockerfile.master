@@ -2,10 +2,18 @@ FROM python:3.11-slim
 
 ARG TARGETARCH=amd64
 
-RUN apt-get update \
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) VLLM_BENCH_ARCH="x86_64" ;; \
+        arm64) VLLM_BENCH_ARCH="aarch64" ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
+    && curl -fsSL -o /usr/local/bin/vllm-bench "https://github.com/vllm-project/vllm-bench/releases/latest/download/vllm-bench-${VLLM_BENCH_ARCH}-linux-musl" \
+    && chmod +x /usr/local/bin/vllm-bench \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 

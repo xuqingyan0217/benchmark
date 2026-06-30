@@ -44,6 +44,8 @@ def valid_payload():
             "port": 8000,
             "health_path": "/health",
             "extra_serve_args": [],
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 1,
         },
         "model_config": {
             "model_name": "qwen",

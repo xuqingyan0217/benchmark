@@ -29,19 +29,37 @@ Total Token throughput (tok/s):          633.39
 """
 
 
-class BenchRunnerTest(unittest.TestCase):
+class MasterBenchRunnerTest(unittest.TestCase):
     def test_parser_extracts_reference_metrics(self):
-        from vllm_bench_platform.bench_runner.result_parser import parse_vllm_bench_output
+        from vllm_bench_platform.master.result_parser import parse_bench_metrics
 
-        metrics = parse_vllm_bench_output(SAMPLE_VLLM_OUTPUT)
+        metrics = parse_bench_metrics({}, SAMPLE_VLLM_OUTPUT)
 
         self.assertEqual(metrics["successful_requests"], 500)
         self.assertEqual(metrics["ttft_mean_ms"], 124.32)
         self.assertEqual(metrics["e2el_p99_ms"], 7255.46)
         self.assertEqual(metrics["total_token_throughput"], 633.39)
 
+    def test_parser_prefers_json_metrics(self):
+        from vllm_bench_platform.master.result_parser import parse_bench_metrics
+
+        metrics = parse_bench_metrics(
+            {
+                "successful_requests": 10,
+                "metrics": {
+                    "total_token_throughput": 99.5,
+                    "mean_ttft_ms": 7.5,
+                },
+            },
+            SAMPLE_VLLM_OUTPUT,
+        )
+
+        self.assertEqual(metrics["successful_requests"], 10)
+        self.assertEqual(metrics["ttft_mean_ms"], 7.5)
+        self.assertEqual(metrics["total_token_throughput"], 99.5)
+
     def test_command_builder_normalizes_reference_typo_and_uses_service_endpoint(self):
-        from vllm_bench_platform.bench_runner.vllm_bench_runner import (
+        from vllm_bench_platform.master.bench_runner import (
             BenchRunRequest,
             build_vllm_bench_command,
             is_localhost_endpoint,
@@ -59,31 +77,48 @@ class BenchRunnerTest(unittest.TestCase):
 
         command = build_vllm_bench_command(
             request,
-            bench_command="vllm bench serve",
+            bench_binary="vllm-bench",
             num_prompts=10,
+            result_dir="/results/run-001/raw_json",
+            result_filename="s1-b7.json",
         )
 
         self.assertFalse(is_localhost_endpoint(request.target_endpoint))
         self.assertTrue(is_localhost_endpoint("http://127.0.0.1:8000"))
+        self.assertEqual(command[0], "vllm-bench")
+        self.assertIn("--backend", command)
+        self.assertIn("vllm", command)
+        self.assertIn("--base-url", command)
+        self.assertIn("http://vllm-target-run-s1:8000", command)
         self.assertIn("--request-rate", command)
         self.assertNotIn("--re te", command)
-        self.assertNotIn("--backend", command)
-        self.assertIn("--endpoint-type", command)
-        self.assertIn("openai-comp", command)
-        self.assertIn("http://vllm-target-run-s1:8000", command)
-        self.assertIn("10", command)
+        self.assertIn("--save-result", command)
+        self.assertIn("--result-filename", command)
 
     def test_run_bench_case_writes_raw_outputs_and_structured_result(self):
-        from vllm_bench_platform.bench_runner.vllm_bench_runner import (
+        from vllm_bench_platform.master.bench_runner import (
             BenchRunRequest,
             run_bench_case,
         )
 
         def runner(args, timeout=None, cwd=None, capture_output=None, text=None):
-            self.assertIn("vllm", args)
+            self.assertIn("vllm-bench", args)
             self.assertEqual(timeout, 30)
             self.assertTrue(capture_output)
             self.assertTrue(text)
+            result_path = Path(args[args.index("--result-dir") + 1]) / args[args.index("--result-filename") + 1]
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "successful_requests": 500,
+                        "metrics": {
+                            "mean_ttft_ms": 124.32,
+                            "total_token_throughput": 633.39,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             return CompletedProcess(returncode=0, stdout=SAMPLE_VLLM_OUTPUT, stderr="stderr text")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,7 +134,7 @@ class BenchRunnerTest(unittest.TestCase):
                 ),
                 results_root=Path(tmp) / "results",
                 work_dir=Path(tmp) / "work",
-                bench_command="vllm bench serve",
+                bench_binary="vllm-bench",
                 timeout_seconds=30,
                 num_prompts=10,
                 runner=runner,
@@ -116,9 +151,10 @@ class BenchRunnerTest(unittest.TestCase):
         self.assertTrue(raw_json.name.endswith(".json"))
         self.assertIn("stderr text", raw_log_text)
         self.assertEqual(raw_json_payload["metrics"]["ttft_mean_ms"], 124.32)
+        self.assertIn("vllm_bench_result", raw_json_payload)
 
     def test_localhost_target_returns_failure_without_running_command(self):
-        from vllm_bench_platform.bench_runner.vllm_bench_runner import (
+        from vllm_bench_platform.master.bench_runner import (
             BenchRunRequest,
             run_bench_case,
         )
