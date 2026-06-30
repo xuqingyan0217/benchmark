@@ -1,0 +1,63 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Test, coverage, and type-check outputs
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment and secrets
+.env
+.env.*
+*.env
+!*.example.env
+configs/enving.env
+configs/vendor_profile.json
+configs/model_config.json
+
+# Benchmark/runtime outputs
+results/
+work/
+artifacts/
+raw_logs/
+raw_json/
+summary.csv
+summary.jsonl
+failed_cases.jsonl
+best_config.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# IDE/editor settings
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

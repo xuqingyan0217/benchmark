@@ -1,0 +1,7 @@
+{
+  "model_name": "Qwen2.5-0.5B-Instruct",
+  "model_path": "Qwen/Qwen2.5-0.5B-Instruct",
+  "served_model_name": "Qwen2.5-0.5B-Instruct",
+  "trust_remote_code": true,
+  "dtype": "float16"
+}

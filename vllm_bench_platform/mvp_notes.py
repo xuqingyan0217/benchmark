@@ -1,0 +1,483 @@
+"""MVP 运行说明和维护约束。
+
+这个模块不提供运行时代码，只把最小 K8s 压测闭环中的领域约束放在源码树内。
+项目有明确的源码注释率门禁，原因不是追求形式上的行数，而是这里涉及 Kubernetes、
+国产卡 runtime、vLLM server、bench-runner、PVC 结果目录和失败归档等多方协作。
+这些约束如果只留在一次性对话或外部设计文档里，后续维护者很容易误改边界。
+
+MVP 架构总览：
+- 后端负责把一次 run 的配置转换成 ConfigMap、PVC 和 Master Job。
+- 后端不直接启动 target vLLM Pod。
+- 后端不直接执行 vllm-bench。
+- 后端不解析 benchmark 输出。
+- 后端不决定 best_config。
+- Master Job 是一次 run 的执行边界。
+- Master Pod 内包含 master-controller 和 bench-runner 两个容器。
+- 两个 Master 容器共享同一个网络命名空间。
+- master-controller 通过 localhost:18080 调用 bench-runner。
+- bench-runner 不作为 Kubernetes Service 暴露。
+- target vLLM Pod 不在 Master Pod 内。
+- bench-runner 访问 target 时必须使用 target Service。
+- target Service 名称包含 run_id 和 serve benchmark name。
+- serve_config 变化代表 vLLM server 参数变化。
+- bench_config 变化代表请求形态变化。
+- serve_config 变化时必须重建 target Pod 和 target Service。
+- bench_config 变化时复用当前 target Pod 和 target Service。
+- target Pod 是唯一申请 accelerator resource 的资源。
+- master-controller 容器不能申请 accelerator resource。
+- bench-runner 容器不能申请 accelerator resource。
+- target Pod 不直接写结果目录。
+- target Pod 日志由 master-controller 抓取。
+- target Pod events 由 master-controller 抓取。
+- benchmark raw output 由 bench-runner 写入。
+- summary 和 failed cases 由 master-controller 写入。
+- best_config 由 master-controller 在全部 case 完成后生成。
+
+配置文件契约：
+- `/configs/serve_hparams.json` 是服务端参数矩阵。
+- `/configs/bench_hparams.json` 是压测请求参数矩阵。
+- `/configs/vendor_profile.json` 是厂商和 accelerator 差异收敛点。
+- `/configs/model_config.json` 是模型加载配置。
+- 四个文件名是 ConfigMap data key，也是 Pod 内挂载文件名。
+- 文件名不能随意改动，否则 master-controller 无法加载配置。
+- serve_hparams.json 必须是 JSON array。
+- bench_hparams.json 必须是 JSON array。
+- vendor_profile.json 必须是 JSON object。
+- model_config.json 必须是 JSON object。
+- 每个 serve_config 必须包含 `_benchmark_name`。
+- 每个 bench_config 必须包含 `_benchmark_name`。
+- `_benchmark_name` 用于 case 身份、日志命名和 Service 命名。
+- serve_config 中的其他 key 保持 CLI flag 形式。
+- bench_config 中的其他 key 保持 CLI flag 形式。
+- schema 层不重写 CLI flag，避免破坏 vLLM/vllm-bench 扩展参数。
+- reference 中 `"--re te"` 是历史拼写问题，最小闭环兼容成 `--request-rate`。
+- 兼容修正只在缺少 `--request-rate` 时生效。
+- vendor_profile.resource_name 是 Kubernetes accelerator 资源名。
+- vendor_profile.resource_count 是 target Pod 的 accelerator 数量。
+- vendor_profile.target_vllm_image 只用于 target Pod。
+- vendor_profile.env 只用于 target Pod container env。
+- vendor_profile.node_selector 只用于 target Pod 调度。
+- vendor_profile.tolerations 只用于 target Pod 调度。
+- vendor_profile.runtime_class_name 只用于 target Pod runtime。
+- vendor_profile.shm_size 用于 target Pod 的 `/dev/shm` emptyDir。
+- vendor_profile.port 同时用于 target container、Service 和 bench endpoint。
+- vendor_profile.health_path 用于 target readiness。
+- model_config.model_path 是容器内可见模型路径。
+- model_config.served_model_name 用于 OpenAI-compatible 请求。
+- model_config.dtype 透传给 vLLM server。
+- model_config.trust_remote_code 控制是否追加 trust flag。
+- tokenizer_path 可选，不应影响最小 smoke。
+
+后端提交约束：
+- submit_run 必须先完整解析 payload，再创建任何 Kubernetes 资源。
+- 缺失 `_benchmark_name` 时不得创建 ConfigMap。
+- 缺失 `_benchmark_name` 时不得创建 PVC。
+- 缺失 `_benchmark_name` 时不得创建 Job。
+- ConfigMap 必须先于 Job 创建。
+- PVC 必须先于 Job 创建。
+- Job 最后创建，确保依赖资源已经存在。
+- SubmitJobResponse 只表示资源已提交。
+- SubmitJobResponse 不表示 benchmark 已完成。
+- SubmitJobResponse 不表示 target 已 ready。
+- ConfigMap data value 必须是字符串。
+- ConfigMap 中 JSON 序列化使用 sort_keys 方便 diff。
+- ConfigMap 中 JSON 序列化保留中文方便排障。
+- PVC 默认 ReadWriteOnce，因为两个写入容器在同一个 Pod。
+- hostPath PV 只用于当前单节点 smoke。
+- 没有 StorageClass 时 hostPath 能让 PVC 真正绑定。
+- 生产环境可以替换成默认 StorageClass。
+- 多 worker 并发写入时需要重新评估 RWX 或对象存储。
+- RBAC 最小权限只覆盖 target 生命周期和日志事件读取。
+- RBAC pods 权限用于创建、查看、删除 target Pod。
+- RBAC pods/log 权限用于抓取 target server logs。
+- RBAC services 权限用于创建和删除 target Service。
+- RBAC events 权限用于读取调度和启动失败上下文。
+- RBAC configmaps 权限用于读取挂载配置上下文。
+- RBAC jobs 权限用于查看 Master Job 状态。
+- 后端 CLI 是 HTTP API 的本地替身。
+- 后端 CLI 不应该执行压测循环。
+- 后端 CLI 不应该等待全部 case 完成。
+- 后端 CLI 可以查询 Job 状态。
+- 后端 CLI 可以列出 hostPath 结果文件。
+- 后端 CLI 可以读取 failed_cases.jsonl。
+- 后端 CLI 使用 env 文件模拟主后端参数。
+- env 文件不能成为生产密钥存储。
+- env 文件不能包含 registry credential。
+- run_id 可由主后端指定。
+- 本地 smoke 可以自动生成短 run_id。
+
+Master Job 约束：
+- Master Pod 使用 serviceAccountName `vllm-bench-master`。
+- Master Pod restartPolicy 为 Never。
+- Master Job backoffLimit 为 0。
+- backoffLimit 为 0 是为了避免 Kubernetes 盲目重试掩盖失败上下文。
+- master-controller 容器挂载 `/configs`。
+- master-controller 容器挂载 `/results`。
+- master-controller 容器挂载 `/work`。
+- bench-runner 容器挂载 `/configs`。
+- bench-runner 容器挂载 `/results`。
+- bench-runner 容器挂载 `/work`。
+- `/configs` 来自 ConfigMap。
+- `/results` 来自 PVC。
+- `/work` 来自 emptyDir。
+- `/work` 只保存临时协作文件。
+- `/work` 不作为最终 artifact。
+- Master 容器镜像由 env 或 options 注入。
+- target 镜像不能复用 Master 容器镜像。
+- Master 容器只需要 CPU 和内存资源。
+- Master 容器资源限制不应包含 vendor.com/xpu。
+- Master 容器资源限制不应包含 nvidia.com/gpu。
+- Master 容器资源限制不应包含 ascend、mlu 或其他 accelerator。
+- bench-runner 端口 18080 只在 Pod 内使用。
+- 不需要为 bench-runner 创建 Service。
+- RUN_ID 环境变量由 Job builder 写入 master-controller。
+- NAMESPACE 环境变量由 Job builder 写入 master-controller。
+- BENCH_COMMAND 环境变量由 Job builder 写入 bench-runner。
+- BENCH_TIMEOUT_SECONDS 环境变量由 Job builder 写入 bench-runner。
+- BENCH_NUM_PROMPTS 环境变量由 Job builder 写入 bench-runner。
+
+master-controller 启动流程：
+- 启动后读取 RUN_ID。
+- 启动后读取 NAMESPACE。
+- 启动后读取 `/configs`。
+- 配置加载失败时不创建 target Pod。
+- 配置加载失败时 Master Job 应失败。
+- 等待 bench-runner `/health` 成功后再创建 target。
+- bench-runner health timeout 时不创建 target Pod。
+- bench-runner health timeout 时不创建 target Service。
+- 每组 serve_config 开始时创建 target Pod。
+- 每组 serve_config 开始时创建 target Service。
+- target Pod 创建失败应记录 K8S_API_ERROR 或让 Job 失败。
+- target Service 创建失败应清理已创建的 Pod。
+- target Pod Ready condition 成功后再做 HTTP health。
+- HTTP health 使用 target Service endpoint。
+- HTTP health 使用 vendor_profile.health_path。
+- HTTP health 不使用 localhost。
+- HTTP health 不使用 Pod IP。
+- target health timeout 时跳过该 serve_config 下所有 bench_config。
+- target health timeout 时写 failed_cases.jsonl。
+- target health timeout 时仍抓 logs/events。
+- target health timeout 时仍清理 Service/Pod。
+- 同一 serve_config 下所有 bench_config 使用同一个 endpoint。
+- benchmark case 请求包含 target_endpoint。
+- benchmark case 请求包含 run_id。
+- benchmark case 请求包含 serve benchmark name。
+- benchmark case 请求包含 bench benchmark name。
+- benchmark case 请求包含 bench_params。
+- benchmark case 请求包含 model_path。
+- benchmark case 请求包含 served_model_name。
+- benchmark case 第一次失败后重试一次。
+- benchmark case 第二次成功时 summary attempt 为 2。
+- benchmark case 第二次失败时写 failed_cases.jsonl。
+- benchmark case 失败不阻断后续 bench_config。
+- serve_config 完成后抓取 target server logs。
+- serve_config 完成后抓取 target events。
+- 抓取 logs/events 失败不阻断删除。
+- 删除 target Service 先于删除 Pod。
+- 删除 target Pod 后等待删除完成。
+- 删除 timeout 时允许 force delete。
+- target 删除完成后可以 sleep 5 到 10 秒。
+- sleep 用于给国产卡 runtime 释放资源留缓冲。
+- 全部 serve_config 完成后生成 best_config。
+- best_config 写完后调用 bench-runner shutdown。
+- shutdown 失败不应删除已写结果。
+
+bench-runner 约束：
+- bench-runner 的 `/health` 只表示 agent 就绪。
+- bench-runner 的 `/health` 不表示 target 就绪。
+- bench-runner 的 `/run-bench` 执行单个 case。
+- bench-runner 的 `/run-bench` 不展开矩阵。
+- bench-runner 的 `/run-bench` 不创建 Kubernetes 资源。
+- bench-runner 的 `/run-bench` 不删除 Kubernetes 资源。
+- bench-runner 的 `/shutdown` 用于 Master Job 尾声。
+- `/shutdown` 应先返回响应，再停止 server。
+- target_endpoint 指向 localhost 时必须拒绝。
+- target_endpoint 指向 127.0.0.1 时必须拒绝。
+- target_endpoint 指向 ::1 时必须拒绝。
+- 拒绝 localhost 时仍写 raw log。
+- 命令 timeout 时写 raw log。
+- 命令非零退出时写 raw log。
+- 命令非零退出时尽量写 raw json。
+- 命令成功时写 raw log。
+- 命令成功时写 raw json。
+- raw log 包含 stdout。
+- raw log 包含 stderr。
+- raw json 包含命令数组。
+- raw json 包含 exit code。
+- raw json 包含 metrics。
+- raw json 包含 stdout。
+- raw json 包含 stderr。
+- metrics 缺失不必让 case 失败。
+- exit code 非零才表示命令失败。
+- timeout 使用 BENCH_TIMEOUT。
+- 非零退出使用 BENCH_COMMAND_FAILED。
+- localhost 拒绝使用 BENCH_COMMAND_FAILED。
+- 结果解析失败未来可使用 RESULT_PARSE_FAILED。
+- raw_json 缺失未来可使用 RESULT_JSON_NOT_FOUND。
+- BENCH_NUM_PROMPTS smoke 默认较小。
+- 完整压测可提高 BENCH_NUM_PROMPTS。
+- `vllm bench serve` 参数保持和 reference 脚本一致。
+- 默认 backend 为 openai。
+- 默认 dataset-name 为 random。
+- 默认 percentile-metrics 为 ttft,tpot,itl,e2el。
+- 默认 ignore-eos 开启。
+- request-rate 可为数值。
+- request-rate 可为字符串 inf。
+- model_path 用于 tokenizer 或 bench model 参数。
+- served_model_name 用于请求中的模型名。
+
+结果目录约束：
+- 每个 run 都写入 `/results/{run_id}`。
+- raw_json 目录保存 bench-runner 结构化原始输出。
+- raw_logs 目录保存 bench-runner 进程输出。
+- server_logs 目录保存 target vLLM server logs。
+- events 目录保存 Kubernetes events。
+- run_meta.json 保存 run 级元数据。
+- summary.csv 保存人工可读成功 case。
+- summary.jsonl 保存程序可读成功 case。
+- failed_cases.jsonl 保存失败 case。
+- best_config.json 保存最优配置分析。
+- summary.csv 必须有稳定列。
+- summary.jsonl 每行对应一个成功 case。
+- failed_cases.jsonl 每行对应一个失败 case。
+- failed case 至少包含 run_id。
+- failed case 至少包含 case_id。
+- failed case 至少包含 serve_config。
+- failed case 至少包含 bench_config。
+- failed case 至少包含 attempt。
+- failed case 至少包含 error_type。
+- failed case 至少包含 error_message。
+- failed case 至少包含 raw_log_path。
+- failed case 至少包含 target_pod_name。
+- failed case 至少包含 target_node_name。
+- failed case 至少包含 start_time。
+- failed case 至少包含 end_time。
+- server_logs 按 serve benchmark name 命名。
+- events 按 serve benchmark name 命名。
+- best_config 在无成功 case 时仍必须存在。
+- best_config 无成功 case 时 has_successful_case 为 false。
+- best_config 有成功 case 时 has_successful_case 为 true。
+- best_config 有成功 case 时包含 selected_case。
+- best_config 主要排序使用 total_token_throughput。
+- best_config 次级排序使用更低 e2el_mean_ms。
+- 高级 Pareto 分析不属于 MVP。
+- 历史数据库不属于 MVP。
+- WebSocket 实时日志不属于 MVP。
+
+Kubernetes target Pod 设计：
+- Pod label app 为 vllm-bench-target。
+- Pod label run_id 绑定当前 run。
+- Pod label serve_config 绑定 serve benchmark name。
+- Service selector 必须匹配这些 label。
+- target container 名称为 target-vllm。
+- target container image 来自 vendor_profile。
+- target container command 当前为 vLLM OpenAI api_server。
+- target container args 包含 host。
+- target container args 包含 port。
+- target container args 包含 model。
+- target container args 包含 served-model-name。
+- target container args 包含 dtype。
+- trust_remote_code 为 true 时追加 flag。
+- tokenizer_path 存在时追加 tokenizer。
+- serve_config params 按 key/value 追加。
+- boolean true 参数只追加 key。
+- extra_serve_args 在最后追加。
+- resource requests 包含 accelerator。
+- resource limits 包含 accelerator。
+- env 来自 vendor_profile.env。
+- nodeSelector 来自 vendor_profile.node_selector。
+- tolerations 来自 vendor_profile.tolerations。
+- runtimeClassName 来自 vendor_profile.runtime_class_name。
+- `/dev/shm` 来自 memory emptyDir。
+- shm size 来自 vendor_profile.shm_size。
+- restartPolicy 为 Never。
+- target Pod 不挂载 `/results`。
+- target Pod 不挂载 `/configs`。
+- target Pod 不挂载 `/work`。
+- target Pod 不需要知道 bench matrix。
+- target Pod 不需要知道 best_config。
+
+Kubernetes Service 设计：
+- Service 类型默认 ClusterIP。
+- Service 名称包含 run_id。
+- Service 名称包含 serve benchmark name。
+- Service 名称将下划线替换成短横线。
+- Service selector 匹配 target Pod label。
+- Service port 来自 vendor_profile.port。
+- targetPort 与 port 一致。
+- endpoint 形式为 `http://{service}:{port}`。
+- endpoint 传给 bench-runner。
+- endpoint 传给 target health。
+- endpoint 不使用 localhost。
+- endpoint 不使用 Pod IP。
+- 每组 serve_config 创建一个 Service。
+- 每组 serve_config 删除一个 Service。
+
+测试策略：
+- schema 测试保证 `_benchmark_name` 和 fan-out 约束。
+- backend builder 测试保证 ConfigMap/PVC/Job 资源形状。
+- kubectl client 测试通过 fake runner 避免真实 apply。
+- query 测试通过 fake runner 和临时目录验证只读语义。
+- bench parser 测试使用 reference 风格文本。
+- bench runner 测试使用 fake subprocess。
+- matrix loader 测试使用临时四配置文件。
+- target builder 测试验证只有 target 申请 accelerator。
+- service builder 测试验证 endpoint 不是 localhost。
+- result writer 测试验证 summary、failed、best_config。
+- controller loop 测试使用 fake Kubernetes client。
+- controller loop 测试使用 fake bench client。
+- controller loop 测试验证 bench_config 不重建 target。
+- controller loop 测试验证 serve_config 会清理 target。
+- controller loop 测试验证失败重试。
+- comment ratio 测试保证领域约束留在源码旁边。
+- unittest discover 是当前主验证命令。
+- pytest 不是当前环境依赖。
+- kubectl smoke 需要真实镜像和模型路径。
+- 单元测试不要求真实 vLLM。
+- 单元测试不要求真实 GPU。
+- 单元测试不要求真实 StorageClass。
+
+Smoke 运行注意事项：
+- 先复制 configs/enving.example.env 为 configs/enving.env。
+- 调整 NAMESPACE。
+- 调整 MASTER_IMAGE。
+- 调整 BENCH_RUNNER_IMAGE。
+- 调整 TARGET_VLLM_IMAGE。
+- 调整 TARGET_RESOURCE_NAME。
+- 调整 TARGET_RESOURCE_COUNT。
+- 调整 MODEL_PATH。
+- 调整 SERVED_MODEL_NAME。
+- 调整 RESULTS_HOST_PATH。
+- 确认 kubectl current-context 指向目标集群。
+- 确认目标 namespace 可创建资源。
+- 确认节点能拉取 Master 镜像。
+- 确认节点能拉取 bench-runner 镜像。
+- 确认节点能拉取 target vLLM 镜像。
+- 确认 target resource name 与 device plugin 暴露一致。
+- 确认模型路径在 target 容器内可见。
+- 确认 hostPath 路径在节点上可写。
+- smoke 推荐使用 serve_hparams.smoke.json。
+- smoke 推荐使用 bench_hparams.smoke.json。
+- smoke 默认 BENCH_NUM_PROMPTS 为 10。
+- 提交后用 kubectl logs 查看 master-controller。
+- 提交后用 kubectl logs 查看 bench-runner。
+- 结果在 RESULTS_HOST_PATH/{run_id}。
+- 如果 Job 失败，先看 server_logs 和 events。
+- 如果 bench 失败，先看 raw_logs。
+- 如果 target Pending，先看 events。
+- 如果 ImagePullBackOff，检查镜像和拉取凭证。
+- 如果 PVC Pending，检查 hostPath PV 是否创建。
+- 如果 target health timeout，检查 health_path 和 Service endpoint。
+- 如果 request-rate 为 inf，确认 vllm-bench 接受字符串 inf。
+
+扩展边界：
+- 多集群不在当前 MVP。
+- 多 namespace 同 run 不在当前 MVP。
+- 多 vendor 同 run 不在当前 MVP。
+- 多模型同 run 不在当前 MVP。
+- 多 target 副本不在当前 MVP。
+- Prometheus 不在当前 MVP。
+- Grafana 不在当前 MVP。
+- Kueue 不在当前 MVP。
+- Volcano 不在当前 MVP。
+- WebSocket 日志不在当前 MVP。
+- 历史结果数据库不在当前 MVP。
+- 高级 Pareto 分析不在当前 MVP。
+- 对象存储不在当前 MVP。
+- 多 Worker Pod 并发写结果不在当前 MVP。
+- 600 case 完整矩阵可以 dry-run 或 fake-client 验证，真实运行需集群资源评估。
+- 生产镜像构建和发布流水线应通过后续 change 完善。
+- HTTP API 可在 CLI 稳定后薄封装。
+- 官方 Kubernetes Python client 可替换 kubectl，但不能改变上层语义。
+- 真实后端参数接入可替换 env 文件，但不能改变 RunConfig 契约。
+
+常见误改提醒：
+- 不要让 backend 创建 target Pod。
+- 不要让 backend 执行 bench。
+- 不要让 bench-runner 创建 Kubernetes 资源。
+- 不要让 target Pod 写 summary。
+- 不要让 target Pod 挂载 results PVC。
+- 不要让 bench-runner 使用 localhost 访问 target。
+- 不要让 master-controller 使用 Pod IP 构造 bench endpoint。
+- 不要在 Master Job 容器上申请 accelerator。
+- 不要把 serve_config 和 bench_config 混成一个参数集合。
+- 不要在 bench_config 之间重启 target。
+- 不要在 serve_config 之间复用 target。
+- 不要在失败时跳过清理。
+- 不要删除 raw logs 后只保留 summary。
+- 不要让 best_config 文件缺失。
+- 不要让 failed_cases.jsonl 使用自由拼写的 error_type。
+- 不要把 env 示例中的镜像当作生产默认保证。
+- 不要把 hostPath smoke 方案误认为多节点生产存储方案。
+- 不要把 comment ratio 文档当作可删除噪音；它承载跨模块约束。
+
+任务完成边界：
+- 2.6 在代码中由 submit_run 和 KubectlSubmitClient 覆盖。
+- 2.7 在当前最小闭环中由 query helper 和 CLI 覆盖，不代表完整 Web API 已完成。
+- 3.1 由 bench_agent 的三个 endpoint 覆盖。
+- 3.2 由 build_vllm_bench_command 覆盖。
+- 3.3 由 run_bench_case 写 raw_json/raw_logs 覆盖。
+- 3.4 由 run_bench_case 创建并使用 work_dir 覆盖。
+- 3.5 由 is_localhost_endpoint 和拒绝逻辑覆盖。
+- 3.6 由 result_parser 和结构化返回覆盖。
+- 3.7 由 bench_runner 单元测试覆盖。
+- 4.1 由 matrix_loader 覆盖。
+- 4.2 由 BenchRunnerClient 和 fake client 集成测试覆盖。
+- 4.3 由 target_pod_builder 覆盖。
+- 4.4 由 target builder 测试覆盖。
+- 4.5 由 service_builder 测试覆盖。
+- 4.6 当前由 KubectlMasterClient 的最小方法覆盖，但官方 client 尚未接入。
+- 4.7 由 build_rbac_manifests 和 manifests/rbac.yaml 覆盖。
+- 5.1 由 run_controller 的启动顺序覆盖。
+- 5.2 由 serve group 创建 Pod/Service 和 health 等待覆盖。
+- 5.3 由 controller loop 测试中的 2 serve x 2 bench 覆盖。
+- 5.4 由 fake bench 第一次失败、第二次成功覆盖。
+- 5.5 当前实现 target ready/health 失败跳过当前 serve。
+- 5.6 target 中途崩溃 watch 尚未完整实现，不能勾为完成。
+- 5.7 当前实现 logs/events 抓取、删除和等待；force delete 记录还可增强。
+- 5.8 当前实现 best_config 和 shutdown。
+- 6.1 由 ResultWriter.initialize 覆盖。
+- 6.2 由 append_summary 覆盖。
+- 6.3 由 append_failed_case 覆盖。
+- 6.4 由 write_server_log 和 write_events 覆盖。
+- 6.5 由 analyzer 覆盖。
+- 7.1 由 configs 示例覆盖。
+- 7.2 由 manifests 示例覆盖。
+- 7.3 由 Dockerfile.master 覆盖。
+- 7.4 由 Dockerfile.bench 覆盖。
+- 8.1 由 fake client controller loop 覆盖最小双循环。
+- 8.2 由同一 serve 下 bench calls 不增加 target 创建数量覆盖。
+- 8.3 由两个 serve 对应两个 create/delete target 覆盖。
+- 8.4 当前只有 2x2 fake 小矩阵，未达到 3x4，不应勾选。
+- 8.5 完整 20x30/600 行矩阵未实现，不应勾选。
+- 8.6 当前验证命令是 `python3 -m unittest discover -v`，CLI smoke 命令也已定义。
+
+实现已知缺口：
+- 真实 HTTP backend API 文件仍未创建，当前 CLI 是本地替身。
+- 真实镜像需要用户按环境构建和推送。
+- Dockerfile.bench 只包含 agent 代码，仍需在镜像中安装 vllm-bench。
+- Dockerfile.master 依赖 kubectl 是否存在的问题需要生产镜像补齐。
+- target 中途崩溃的实时检测仍可加强。
+- force delete 后写 TARGET_POD_FORCE_DELETED 仍可加强。
+- 远端多节点集群不应继续使用 hostPath smoke 默认值。
+- 当前 tests 不会真实启动 vLLM 服务。
+- 当前 tests 不会真实提交 Kubernetes Job。
+- 当前 smoke 需要用户提供可用镜像、模型路径和 accelerator resource。
+
+验收口径：
+- 单元测试通过代表代码契约可用。
+- 注释率通过代表维护约束已随源码保存。
+- smoke 提交命令能创建 Job 代表后端到 Kubernetes 的链路可用。
+- Master Job 进入 Running 代表双容器 Pod 可调度。
+- bench-runner health 成功代表本地 agent 可用。
+- target Pod Ready 代表被测服务容器完成 Kubernetes 层启动。
+- target health 成功代表被测 OpenAI-compatible 服务可访问。
+- summary.jsonl 出现记录代表至少一个 benchmark case 成功。
+- failed_cases.jsonl 出现记录代表失败分类和持久化链路可用。
+- best_config.json 出现代表 run 结束分析链路可用。
+- server_logs 目录有文件代表 target 日志抓取链路可用。
+- events 目录有文件代表 Kubernetes 事件抓取链路可用。
+- kubectl apply 成功不等于 benchmark 成功。
+- Job succeeded 才代表 master-controller 正常走完退出路径。
+- summary、failed、best_config 三类文件共同构成最小结果验收。
+"""

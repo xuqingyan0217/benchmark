@@ -1,0 +1,44 @@
+[
+  {
+    "_benchmark_name": "b1_short_prompt_low_qps",
+    "--random-input-len": 512,
+    "--random-output-len": 128,
+    "--request-rate": 1
+  },
+  {
+    "_benchmark_name": "b2_short_prompt_med_qps",
+    "--random-input-len": 512,
+    "--random-output-len": 128,
+    "--request-rate": 4
+  },
+  {
+    "_benchmark_name": "b3_short_prompt_high_qps",
+    "--random-input-len": 512,
+    "--random-output-len": 128,
+    "--request-rate": 16
+  },
+  {
+    "_benchmark_name": "b4_med_prompt_low_qps",
+    "--random-input-len": 2048,
+    "--random-output-len": 512,
+    "--request-rate": 1
+  },
+  {
+    "_benchmark_name": "b5_med_prompt_med_qps",
+    "--random-input-len": 2048,
+    "--random-output-len": 512,
+    "--request-rate": 4
+  },
+  {
+    "_benchmark_name": "b6_long_prompt_low_qps",
+    "--random-input-len": 4096,
+    "--random-output-len": 1024,
+    "--request-rate": 1
+  },
+  {
+    "_benchmark_name": "b7_saturation",
+    "--random-input-len": 1024,
+    "--random-output-len": 256,
+    "--re te": "inf"
+  }
+]

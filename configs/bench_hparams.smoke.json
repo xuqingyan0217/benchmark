@@ -1,0 +1,8 @@
+[
+  {
+    "_benchmark_name": "b1_smoke",
+    "--random-input-len": 32,
+    "--random-output-len": 16,
+    "--request-rate": 1
+  }
+]

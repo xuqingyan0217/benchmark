@@ -1,0 +1,14 @@
+{
+  "vendor_name": "local",
+  "target_vllm_image": "vllm/vllm-openai:v0.8.5",
+  "resource_name": "nvidia.com/gpu",
+  "resource_count": 1,
+  "env": {},
+  "node_selector": {},
+  "tolerations": [],
+  "runtime_class_name": null,
+  "shm_size": "16Gi",
+  "port": 8000,
+  "health_path": "/health",
+  "extra_serve_args": []
+}

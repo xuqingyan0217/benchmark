@@ -1,0 +1,8 @@
+[
+  {
+    "_benchmark_name": "s1_smoke",
+    "--max-num-seqs": 2,
+    "--max-num-batched-tokens": 4096,
+    "--max-model-len": 2048
+  }
+]

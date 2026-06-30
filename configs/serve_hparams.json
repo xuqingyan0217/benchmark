@@ -1,0 +1,37 @@
+[
+  {
+    "_benchmark_name": "s1_baseline",
+    "--max-num-seqs": 16,
+    "--max-num-batched-tokens": 32768
+  },
+  {
+    "_benchmark_name": "s2_med_concurrency",
+    "--max-num-seqs": 32,
+    "--max-num-batched-tokens": 65536
+  },
+  {
+    "_benchmark_name": "s3_high_throughput",
+    "--max-num-seqs": 64,
+    "--max-num-batched-tokens": 131072
+  },
+  {
+    "_benchmark_name": "s4_low_concurrency",
+    "--max-num-seqs": 8,
+    "--max-num-batched-tokens": 16384
+  },
+  {
+    "_benchmark_name": "s5_extreme_seqs",
+    "--max-num-seqs": 128,
+    "--max-num-batched-tokens": 131072
+  },
+  {
+    "_benchmark_name": "s6_more_batched",
+    "--max-num-seqs": 64,
+    "--max-num-batched-tokens": 262144
+  },
+  {
+    "_benchmark_name": "s7_extreme_combo",
+    "--max-num-seqs": 128,
+    "--max-num-batched-tokens": 262144
+  }
+]

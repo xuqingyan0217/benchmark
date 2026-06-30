@@ -1,0 +1,7 @@
+FROM vllm/vllm-openai:v0.8.5
+
+WORKDIR /app
+COPY vllm_bench_platform /app/vllm_bench_platform
+
+# 基础镜像提供可用的 `vllm bench serve`，agent 只负责封装调用和落盘结果。
+ENTRYPOINT ["python3", "-m", "vllm_bench_platform.bench_runner.bench_agent"]
