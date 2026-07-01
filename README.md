@@ -348,6 +348,14 @@ target pod failed before ready: OOMKilled
 
 如果 target Pod 只是正常下载模型、初始化 vLLM，且没有出现上述 fatal reason，Master 会继续等待，直到 ready / health 成功或达到内部等待上限。
 
+Master 启动阶段的资源规划错误会写入：
+
+```text
+run_errors.jsonl
+```
+
+例如 Hugging Face 访问失败、TLS/代理中断、模型元数据缺失等发生在 target Pod 创建之前的问题，会记录为 run-level error。Hugging Face JSON 请求当前会自动重试 3 次；如果仍失败，Master Job 会失败，并在 `run_errors.jsonl` 中保留错误信息和 traceback。
+
 ## 后续 TODO（已完成）
 
 详细执行计划见 `docs/implementation-plan.md`。

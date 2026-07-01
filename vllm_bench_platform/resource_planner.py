@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 import math
+import time
 from typing import Any, Callable
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -32,6 +33,7 @@ class ModelResourceMetadata:
 
 
 FetchJson = Callable[[str, str | None], dict[str, Any]]
+DEFAULT_FETCH_RETRIES = 3
 
 
 def plan_model_resources(
@@ -211,11 +213,18 @@ def _fetch_json(url: str, token: str | None) -> dict[str, Any]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(url, headers=headers)
-    try:
-        with urlopen(request, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise ResourcePlanningError(f"failed to fetch {url}: {exc}") from exc
+    errors: list[str] = []
+    for attempt in range(1, DEFAULT_FETCH_RETRIES + 1):
+        try:
+            with urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: {exc}")
+            if attempt < DEFAULT_FETCH_RETRIES:
+                time.sleep(min(2 ** (attempt - 1), 4))
+    else:
+        raise ResourcePlanningError(f"failed to fetch {url} after {DEFAULT_FETCH_RETRIES} attempts: {'; '.join(errors)}")
     if not isinstance(data, dict):
         raise ResourcePlanningError(f"{url} must be a JSON object")
     return data

@@ -65,6 +65,7 @@ class ResultWriter:
                 csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS).writeheader()
         (self.run_root / "summary.jsonl").touch(exist_ok=True)
         (self.run_root / "failed_cases.jsonl").touch(exist_ok=True)
+        (self.run_root / "run_errors.jsonl").touch(exist_ok=True)
 
     def append_summary(self, record: dict[str, Any]) -> None:
         metrics = dict(record.get("metrics", {}))
@@ -93,6 +94,10 @@ class ResultWriter:
             payload["error_type"] = error_type.value
         with (self.run_root / "failed_cases.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def append_run_error(self, record: dict[str, Any]) -> None:
+        with (self.run_root / "run_errors.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
     def write_server_log(self, serve_name: str, text: str) -> None:
         (self.run_root / "server_logs" / f"{serve_name}.log").write_text(text, encoding="utf-8")

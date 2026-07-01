@@ -202,15 +202,18 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - [x] 遇到 `CreateContainerConfigError`、`CreateContainerError` 立即返回失败。
 - [x] failed case 的错误信息包含具体 container reason。
 - [x] fatal reason 出现后立即抓取 logs/events、删除 target Pod/Service，并进入下一组 `serve_hparams`。
+- [x] Hugging Face 元数据请求失败时自动重试 3 次。
+- [x] 资源规划失败时写入 `run_errors.jsonl`。
+- [x] `run_errors.jsonl` 记录错误类型、错误信息、时间和 traceback。
 - [ ] 将 target ready timeout 配置化。
 - [ ] 将 target health timeout 配置化。
 - [ ] 支持 timeout 为 `0` 表示只因 fatal reason 失败，不按时间上限删除正在正常启动/下载的 target Pod。
-- [ ] 为 Master 启动阶段失败增加 run-level error 落盘，例如 `run_errors.jsonl`。
 
 验收：
 
 - 显存不足导致 `OOMKilled` 时，不再等待默认 `600s` ready timeout。
 - `failed_cases.jsonl` 中能看到具体错误原因，例如 `target pod failed before ready: OOMKilled`。
+- Hugging Face SSL EOF、代理中断等资源规划错误会重试，最终失败时写入 `run_errors.jsonl`。
 - target Pod 的删除仍由 Master 主动执行，而不是依赖 Kubernetes 自动过期。
 
 ## 当前执行顺序

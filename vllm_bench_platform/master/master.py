@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 import time
+import traceback
 from typing import Any
 
 from vllm_bench_platform.master.analyzer import write_best_config
@@ -43,19 +44,27 @@ def run_controller(
 ) -> None:
     """执行 serve_config x bench_config 的最小可运行闭环。"""
     run_config = load_run_config_from_dir(config_dir, run_id=run_id, namespace=namespace)
+    writer = ResultWriter(results_root, run_id)
+    writer.initialize({"namespace": namespace, "config_dir": str(config_dir)})
     if target_gpu_memory_gb <= 0:
-        raise ValueError("TARGET_GPU_MEMORY_GB must be greater than 0")
-    run_config = apply_resource_plan(
-        run_config,
-        plan_model_resources(
-            memory_per_gpu_gb=target_gpu_memory_gb,
-            model_id=run_config.model_config.model_path,
-            fallback_model_id=run_config.model_config.model_name,
-            hf_endpoint=hf_endpoint,
-            hf_token=hf_token,
-            fetch_json=resource_metadata_fetcher,
-        ),
-    )
+        error = ValueError("TARGET_GPU_MEMORY_GB must be greater than 0")
+        _write_run_error(writer, run_id, "RESOURCE_PLANNING_FAILED", str(error), error)
+        raise error
+    try:
+        run_config = apply_resource_plan(
+            run_config,
+            plan_model_resources(
+                memory_per_gpu_gb=target_gpu_memory_gb,
+                model_id=run_config.model_config.model_path,
+                fallback_model_id=run_config.model_config.model_name,
+                hf_endpoint=hf_endpoint,
+                hf_token=hf_token,
+                fetch_json=resource_metadata_fetcher,
+            ),
+        )
+    except Exception as exc:
+        _write_run_error(writer, run_id, "RESOURCE_PLANNING_FAILED", str(exc), exc)
+        raise
     k8s = k8s_client or KubectlMasterClient()
     bench = bench_client or DirectBenchRunner(
         results_root=results_root,
@@ -64,8 +73,6 @@ def run_controller(
         timeout_seconds=bench_timeout_seconds,
         num_prompts=bench_num_prompts,
     )
-    writer = ResultWriter(results_root, run_id)
-    writer.initialize({"namespace": namespace, "config_dir": str(config_dir)})
 
     for serve_config in run_config.serve_configs:
         _run_serve_group(
@@ -251,6 +258,19 @@ def _failed_case_record(
         "start_time": now,
         "end_time": now,
     }
+
+
+def _write_run_error(writer: ResultWriter, run_id: str, error_type: str, message: str, exc: BaseException) -> None:
+    now = datetime.now(UTC).isoformat()
+    writer.append_run_error(
+        {
+            "run_id": run_id,
+            "error_type": error_type,
+            "error_message": message,
+            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            "time": now,
+        }
+    )
 
 
 def main() -> None:

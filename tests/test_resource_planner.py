@@ -120,6 +120,34 @@ class ResourcePlannerTest(unittest.TestCase):
         with self.assertRaisesRegex(ResourcePlanningError, "Hugging Face repo id"):
             plan_model_resources(memory_per_gpu_gb=24, model_id="/models/local-only")
 
+    def test_fetch_json_retries_transient_failures(self):
+        from unittest.mock import patch
+        from vllm_bench_platform.resource_planner import _fetch_json
+
+        calls = {"count": 0}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_urlopen(request, timeout):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("temporary ssl eof")
+            return Response()
+
+        with patch("vllm_bench_platform.resource_planner.urlopen", fake_urlopen), patch("time.sleep"):
+            data = _fetch_json("https://huggingface.co/org/model/resolve/main/config.json", None)
+
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(calls["count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

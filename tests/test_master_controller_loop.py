@@ -306,6 +306,68 @@ class MasterControllerLoopTest(unittest.TestCase):
         self.assertEqual(created_options[0]["timeout_seconds"], 660)
         self.assertEqual(created_options[0]["num_prompts"], 20)
 
+    def test_controller_writes_run_error_when_resource_planning_fails(self):
+        from vllm_bench_platform.master.master import run_controller
+        from vllm_bench_platform.resource_planner import ResourcePlanningError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "configs"
+            config_dir.mkdir()
+            (config_dir / "serve_hparams.json").write_text(json.dumps([{"_benchmark_name": "s1"}]), encoding="utf-8")
+            (config_dir / "bench_hparams.json").write_text(json.dumps([{"_benchmark_name": "b1"}]), encoding="utf-8")
+            (config_dir / "vendor_profile.json").write_text(
+                json.dumps(
+                    {
+                        "vendor_name": "xpu",
+                        "target_vllm_image": "local/vllm:xpu",
+                        "resource_name": "vendor.com/xpu",
+                        "resource_count": 1,
+                        "port": 8000,
+                        "health_path": "/health",
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (config_dir / "model_config.json").write_text(
+                json.dumps(
+                    {
+                        "model_name": "org/qwen",
+                        "model_path": "org/qwen",
+                        "served_model_name": "qwen",
+                        "trust_remote_code": True,
+                        "dtype": "float16",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fetch_json(url, token):
+                raise ResourcePlanningError("temporary hf failure")
+
+            with self.assertRaises(ResourcePlanningError):
+                run_controller(
+                    config_dir=config_dir,
+                    results_root=root / "results",
+                    work_dir=root / "work",
+                    run_id="run-001",
+                    namespace="bench",
+                    k8s_client=FakeKubernetesClient(),
+                    release_sleep_seconds=0,
+                    target_gpu_memory_gb=8,
+                    resource_metadata_fetcher=fetch_json,
+                )
+
+            errors = [
+                json.loads(line)
+                for line in (root / "results" / "run-001" / "run_errors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(errors[0]["error_type"], "RESOURCE_PLANNING_FAILED")
+        self.assertIn("temporary hf failure", errors[0]["error_message"])
+
 
 if __name__ == "__main__":
     unittest.main()
