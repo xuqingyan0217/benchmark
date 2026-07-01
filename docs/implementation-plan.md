@@ -80,7 +80,7 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 
 - [x] 将 `run_bench_case` 逻辑迁移到 master 可直接调用的模块。
 - [x] 命令从 `vllm bench serve` 改为 `vllm-bench`。
-- [x] 使用 `--backend vllm`、`--base-url <target-service>`、`--model <served-model-name>`。
+- [x] bench 参数对齐 reference 脚本：使用 `--backend openai`、`--base-url <target-service>`、`--model <model_path>`、`--served-model-name <served_model_name>`、`--ignore-eos`。
 - [x] 支持 `--save-result` 和明确的 result filename。
 - [x] raw log 写入 `/results/{run_id}/raw_logs/`。
 - [x] raw json 写入 `/results/{run_id}/raw_json/`。
