@@ -160,6 +160,8 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - 配置 `MODEL_CACHE_HOST_PATH` 后，首次下载会落到宿主机 cache 目录。
 - 后续调度到同一节点并挂同一 cache 目录的 target Pod 会复用模型缓存。
 - 配置 `MODEL_HOST_PATH` 和 `MODEL_MOUNT_PATH` 后，vLLM 可直接从本地模型目录加载。
+- 另一个已测试用法是本地预置模型目录模式：`MODEL_HOST_PATH=/tmp/vllm-bench/model-cache/models--Qwen--Qwen2.5-0.5B-Instruct`，`MODEL_MOUNT_PATH=/models/qwen-cache-layout`，`MODEL_PATH=/models/qwen-cache-layout/snapshots/7ae557604adf67be50417f59c2c2f167def9a775`。
+- 如果同时配置模型目录挂载和 Hugging Face cache 挂载，target Pod 会同时挂载；vLLM 最终加载来源由 `MODEL_PATH` 决定。
 
 ### 第 6 批：统一持久化目录
 

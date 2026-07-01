@@ -15,7 +15,7 @@
 2. Master Job
    - Kubernetes Job，Pod 内只有一个容器：`master-controller`。
    - 读取 `/configs` 中的四个 JSON 配置文件。
-   - 通过 Hugging Face API 读取模型 config 和权重文件大小，计算 GPU 数量、TP、PP。
+   - 直接使用 env 渲染进 `vendor_profile.json` 的 GPU 数量、TP、PP，不访问 Hugging Face 做自动估算。
    - 按每组 `serve_hparams` 创建 target vLLM Pod 和 Service。
    - 等待 target ready / health 成功后，直接调用容器内的 `vllm-bench`。
    - 抓取 target logs / events，清理 target Service / Pod，写入结果。
@@ -84,6 +84,13 @@ target vLLM Pod 挂载：
   - 可选 hostPath，用作 Hugging Face 下载缓存。
   - target 容器会把 `HF_HOME` 和 `HUGGINGFACE_HUB_CACHE` 指向 `MODEL_CACHE_MOUNT_PATH`。
 
+`MODEL_HOST_PATH` 和 `MODEL_CACHE_HOST_PATH` 是两种不同用途：
+
+- 默认 Hugging Face 在线下载 cache 模式：配置 `MODEL_CACHE_HOST_PATH`、`MODEL_CACHE_MOUNT_PATH`，`MODEL_PATH` 使用 Hugging Face repo id，`MODEL_HOST_PATH`、`MODEL_MOUNT_PATH` 留空。
+- 本地预置模型目录模式：配置 `MODEL_HOST_PATH`、`MODEL_MOUNT_PATH`，`MODEL_PATH` 指向容器内模型目录或 snapshot 子目录。
+
+如果两种挂载都配置了，target Pod 会同时挂载这两类目录；vLLM 最终加载哪里，只看 `MODEL_PATH` 指向 Hugging Face repo id 还是容器内本地路径。
+
 ## 资源配置
 
 GPU 数量、TP、PP 直接由 env 手工填写，backend 会写入 `vendor_profile.json`，Master 创建 target Pod 时原样使用，不访问 Hugging Face，也不做自动估算。
@@ -116,6 +123,18 @@ GPU 数量、TP、PP 直接由 env 手工填写，backend 会写入 `vendor_prof
 - 依赖 Hugging Face 在线下载，但没有配置持久化 cache：每次新 target Pod 都可能重新下载。
 
 由于每组 `serve_hparams` 会创建一个新的 target Pod，如果没有模型缓存，完整矩阵可能会触发多次下载。真实测试建议提前把模型放到 target 镜像、节点本地模型目录，或配置 `MODEL_CACHE_HOST_PATH`。
+
+默认示例采用 Hugging Face 在线下载 cache 模式。如果要改成本地预置模型目录模式，可以把已经下载好的 Hugging Face 单模型目录挂进 target Pod：
+
+```env
+MODEL_PATH=/models/qwen-cache-layout/snapshots/7ae557604adf67be50417f59c2c2f167def9a775
+MODEL_HOST_PATH=/tmp/vllm-bench/model-cache/models--Qwen--Qwen2.5-0.5B-Instruct
+MODEL_MOUNT_PATH=/models/qwen-cache-layout
+MODEL_CACHE_HOST_PATH=
+MODEL_CACHE_MOUNT_PATH=
+```
+
+这里 `MODEL_HOST_PATH` 指向宿主机上的 `models--Qwen--Qwen2.5-0.5B-Instruct` 目录，`MODEL_MOUNT_PATH` 是它在 target 容器内看到的位置，`MODEL_PATH` 则指向容器内实际 snapshot 目录。即使同时配置了 Hugging Face cache 挂载，vLLM 也会按 `MODEL_PATH` 指向的本地 snapshot 加载。
 
 ## 持久化目录
 
@@ -304,12 +323,18 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
 
 当前没有给 target Pod 配置 Kubernetes 层面的过期时间，也没有给 Pod 设置自动 TTL。target Pod 不会因为“模型下载耗时很久”或“整体运行时间很久”被 Kubernetes 自动删除。
 
-Master 仍然有程序内部等待边界：
+Master 仍然有程序内部等待边界。当前固定或默认的超时如下：
 
-- 等 target Pod ready：默认 `600s`。
-- 等 target HTTP health：默认 `600s`。
-- 单次 `vllm-bench`：由 `BENCH_TIMEOUT_SECONDS` 控制。
-- 等 target Pod 删除：默认 `120s`，超时后尝试 force delete。
+| 场景 | 当前值 | 是否可通过 env 修改 | 说明 |
+| --- | --- | --- | --- |
+| 等 target Pod ready | `600s` | 否 | Master 创建 target Pod 后，最多等待 10 分钟进入 Ready。 |
+| 等 target HTTP health | `600s` | 否 | target Pod Ready 后，最多等待 10 分钟让 vLLM health endpoint 可访问。 |
+| 单次 HTTP health 请求 | `5s` | 否 | 每次探测 health endpoint 的单个 HTTP 请求超时。 |
+| ready / health 轮询间隔 | `2s` | 否 | Master 每 2 秒检查一次 Pod 状态或 health。 |
+| 单次 `vllm-bench` | `BENCH_TIMEOUT_SECONDS` | 是 | 限制一个 bench case 的子进程运行时间；代码默认 `1800s`，示例 env 当前为 `600s`。 |
+| 等 target Pod 删除 | `120s` | 否 | 删除 target Pod 后最多等待 120 秒，超时后尝试 force delete。 |
+| 删除等待的 kubectl 子进程 | `删除等待秒数 + 10s` | 否 | 默认是 `130s`，用于避免 kubectl wait 自身卡住。 |
+| 每组 serve 配置之间的等待 | `5s` | 否 | 一组 target Pod 清理后，Master 等 5 秒再进入下一组 `serve_hparams`。 |
 
 这些等待不是 Pod 生命周期 TTL，而是 Master 判断某个阶段是否继续等待的上限。若超时，Master 会记录失败并主动清理 target Pod / Service。
 
@@ -340,8 +365,8 @@ target pod failed before ready: OOMKilled
 
 ## 额外 TODO
 
-1. 模型挂载当前是hostpath，pod跨节点就无效了，最终需要使用nfs，pvc
-2. 当前直接测试的时候，有时会遇到显存顶不住的情况，导致任务直接失败，能否按照下面流程进行优化：
+1. 模型挂载当前是hostpath，pod会把模型挂载到调用该pod的宿主机，下一个pod一旦跨节点就无效了，跨节点的宿主机没有最初的挂载；所以最终需要使用nfs，pvc
+2. 当前直接测试的时候，有时会遇到显存顶不住的情况，导致任务直接失败，能否按照下面流程进行优化（？）：
 ```
 读取 GPU 信息
     ↓
@@ -357,8 +382,5 @@ target pod failed before ready: OOMKilled
     ↓
 再执行 vllm bench serve
 ```
-3. 获取指标信息，显存，能看到执行时的指标
+3. 获取指标信息，显存，能看到执行时的指标（轻）
 
----
-1. target pod error后没被回收，依旧10分钟超时回收
-2. 打印一个标记，确保模型挂载是生效了的

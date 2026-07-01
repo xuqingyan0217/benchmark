@@ -1,0 +1,137 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-07-01T08:22:06.484415Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "vllm-target-test007-s3-high-throughput",
+                "namespace": "bench",
+                "resourceVersion": "570020",
+                "uid": "03932894-f7dc-4b48-b056-e4af4a2a407f"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned bench/vllm-target-test007-s3-high-throughput to laptop-96nm4h0q",
+            "metadata": {
+                "creationTimestamp": "2026-07-01T08:22:06Z",
+                "name": "vllm-target-test007-s3-high-throughput.18be1cc3093bfffe",
+                "namespace": "bench",
+                "resourceVersion": "570022",
+                "uid": "5d2214cf-2f6e-46c5-9657-98bd2c72690e"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-LAPTOP-96NM4H0Q",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-01T08:22:06Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{target-vllm}",
+                "kind": "Pod",
+                "name": "vllm-target-test007-s3-high-throughput",
+                "namespace": "bench",
+                "resourceVersion": "570021",
+                "uid": "03932894-f7dc-4b48-b056-e4af4a2a407f"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-01T08:22:06Z",
+            "message": "Container image \"localhost:5000/vllm/vllm-openai:v0.8.5\" already present on machine and can be accessed by the pod",
+            "metadata": {
+                "creationTimestamp": "2026-07-01T08:22:06Z",
+                "name": "vllm-target-test007-s3-high-throughput.18be1cc327820045",
+                "namespace": "bench",
+                "resourceVersion": "570028",
+                "uid": "debbc2fd-3ce5-4691-8f0f-1f5c3f406077"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "laptop-96nm4h0q",
+            "source": {
+                "component": "kubelet",
+                "host": "laptop-96nm4h0q"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-01T08:22:07Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{target-vllm}",
+                "kind": "Pod",
+                "name": "vllm-target-test007-s3-high-throughput",
+                "namespace": "bench",
+                "resourceVersion": "570021",
+                "uid": "03932894-f7dc-4b48-b056-e4af4a2a407f"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-01T08:22:07Z",
+            "message": "Container created",
+            "metadata": {
+                "creationTimestamp": "2026-07-01T08:22:07Z",
+                "name": "vllm-target-test007-s3-high-throughput.18be1cc3290d210c",
+                "namespace": "bench",
+                "resourceVersion": "570030",
+                "uid": "ff862db0-a28e-4a08-b978-7c46a1e00082"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "laptop-96nm4h0q",
+            "source": {
+                "component": "kubelet",
+                "host": "laptop-96nm4h0q"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-07-01T08:22:07Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{target-vllm}",
+                "kind": "Pod",
+                "name": "vllm-target-test007-s3-high-throughput",
+                "namespace": "bench",
+                "resourceVersion": "570021",
+                "uid": "03932894-f7dc-4b48-b056-e4af4a2a407f"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-07-01T08:22:07Z",
+            "message": "Container started",
+            "metadata": {
+                "creationTimestamp": "2026-07-01T08:22:07Z",
+                "name": "vllm-target-test007-s3-high-throughput.18be1cc35f878dd6",
+                "namespace": "bench",
+                "resourceVersion": "570033",
+                "uid": "20b6e401-a6ab-442e-801e-b99d58a79c7d"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "laptop-96nm4h0q",
+            "source": {
+                "component": "kubelet",
+                "host": "laptop-96nm4h0q"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
