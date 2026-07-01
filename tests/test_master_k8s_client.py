@@ -72,6 +72,33 @@ class MasterK8sClientTest(unittest.TestCase):
         self.assertEqual(reason, "OOMKilled")
         self.assertEqual(calls[0][:4], ["kubectl", "get", "pod", "target"])
 
+    def test_wait_target_http_ready_returns_false_when_container_errors_during_health_wait(self):
+        from vllm_bench_platform.master.k8s_client import KubectlMasterClient
+
+        calls = []
+
+        def runner(args, input_text=None, timeout=None):
+            calls.append(args)
+            if args[:4] == ["kubectl", "get", "pod", "target"]:
+                return (
+                    '{"status":{"phase":"Running","containerStatuses":['
+                    '{"state":{"terminated":{"reason":"Error"}}}'
+                    ']}}'
+                )
+            return ""
+
+        with patch("time.sleep"), patch("vllm_bench_platform.master.k8s_client.urlopen") as mocked_urlopen:
+            ready = KubectlMasterClient(runner=runner).wait_target_http_ready(
+                "http://target/health",
+                "target",
+                "bench",
+                timeout_seconds=5,
+            )
+
+        self.assertFalse(ready)
+        mocked_urlopen.assert_not_called()
+        self.assertEqual(calls[0][:4], ["kubectl", "get", "pod", "target"])
+
 
 if __name__ == "__main__":
     unittest.main()

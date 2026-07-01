@@ -209,6 +209,70 @@ class MasterComponentsTest(unittest.TestCase):
         self.assertEqual(failed["error_type"], "TARGET_POD_FAILED")
         self.assertIn("OOMKilled", failed["error_message"])
 
+    def test_controller_records_target_failure_during_health_wait(self):
+        from vllm_bench_platform.master.master import run_controller
+
+        class HealthFailedKubernetes:
+            def create_pod(self, manifest): ...
+            def create_service(self, manifest): ...
+            def wait_pod_ready(self, name, namespace, timeout_seconds=600): return True
+            def wait_target_http_ready(self, url, pod_name, namespace, timeout_seconds=600): return False
+            def pod_phase(self, name, namespace): return "Running"
+            def pod_failure_reason(self, name, namespace): return "Error"
+            def pod_node_name(self, name, namespace): return "node-a"
+            def get_pod_logs(self, name, namespace): return "server crashed"
+            def get_pod_events(self, name, namespace): return "{}"
+            def delete_service(self, name, namespace): ...
+            def delete_pod(self, name, namespace): ...
+            def wait_pod_deleted(self, name, namespace, timeout_seconds=120): return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "configs"
+            config_dir.mkdir()
+            (config_dir / "serve_hparams.json").write_text(json.dumps([{"_benchmark_name": "s1"}]), encoding="utf-8")
+            (config_dir / "bench_hparams.json").write_text(json.dumps([{"_benchmark_name": "b1"}]), encoding="utf-8")
+            (config_dir / "vendor_profile.json").write_text(
+                json.dumps(
+                    {
+                        "vendor_name": "xpu",
+                        "target_vllm_image": "local/vllm:xpu",
+                        "resource_name": "vendor.com/xpu",
+                        "resource_count": 1,
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (config_dir / "model_config.json").write_text(
+                json.dumps(
+                    {
+                        "model_name": "org/model",
+                        "model_path": "/models/qwen",
+                        "served_model_name": "qwen",
+                        "trust_remote_code": True,
+                        "dtype": "float16",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            run_controller(
+                config_dir=config_dir,
+                results_root=root / "results",
+                work_dir=root / "work",
+                run_id="run-001",
+                namespace="bench",
+                k8s_client=HealthFailedKubernetes(),
+                bench_client=object(),
+                release_sleep_seconds=0,
+            )
+            failed = json.loads((root / "results" / "run-001" / "failed_cases.jsonl").read_text(encoding="utf-8"))
+
+        self.assertEqual(failed["error_type"], "TARGET_POD_FAILED")
+        self.assertIn("Error", failed["error_message"])
+
     def test_target_pod_mounts_model_and_cache_when_configured(self):
         from tests.test_backend_submit_job import valid_payload
         from vllm_bench_platform.backend.submit_job import SubmitJobRequest

@@ -89,8 +89,12 @@ def _run_serve_group(
                 message = "target pod failed before ready" if phase == "Failed" else "target pod ready timeout"
             _write_failed_for_all_benches(run_config, serve_config, writer, pod_name, node_name, error_type, message)
             return
-        if not k8s.wait_http_ready(endpoint + run_config.vendor_profile.health_path):
-            _write_failed_for_all_benches(run_config, serve_config, writer, pod_name, node_name, ErrorType.TARGET_HEALTH_TIMEOUT, "target health timeout")
+        if not _wait_target_http_ready(k8s, endpoint + run_config.vendor_profile.health_path, pod_name, run_config.namespace):
+            phase = _pod_phase(k8s, pod_name, run_config.namespace)
+            failure_reason = _pod_failure_reason(k8s, pod_name, run_config.namespace)
+            error_type = ErrorType.TARGET_POD_FAILED if phase == "Failed" or failure_reason else ErrorType.TARGET_HEALTH_TIMEOUT
+            message = f"target pod failed during health check: {failure_reason}" if failure_reason else "target health timeout"
+            _write_failed_for_all_benches(run_config, serve_config, writer, pod_name, node_name, error_type, message)
             return
         for bench_config in run_config.bench_configs:
             _run_bench_with_retry(
@@ -205,6 +209,13 @@ def _pod_failure_reason(k8s: Any, pod_name: str, namespace: str) -> str:
         return k8s.pod_failure_reason(pod_name, namespace)
     except Exception:
         return ""
+
+
+def _wait_target_http_ready(k8s: Any, url: str, pod_name: str, namespace: str) -> bool:
+    try:
+        return k8s.wait_target_http_ready(url, pod_name, namespace)
+    except AttributeError:
+        return k8s.wait_http_ready(url)
 
 
 def _failed_case_record(

@@ -358,3 +358,7 @@ target pod failed before ready: OOMKilled
 再执行 vllm bench serve
 ```
 3. 获取指标信息，显存，能看到执行时的指标
+
+---
+1. target pod error后没被回收，依旧10分钟超时回收
+2. 打印一个标记，确保模型挂载是生效了的

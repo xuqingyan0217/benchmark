@@ -82,6 +82,24 @@ class KubectlMasterClient:
                 time.sleep(2)
         return False
 
+    def wait_target_http_ready(self, url: str, pod_name: str, namespace: str, timeout_seconds: int = 600) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                pod = self._get_pod(pod_name, namespace)
+                phase = pod.get("status", {}).get("phase", "")
+                if phase == "Failed" or _has_fatal_container_state(pod):
+                    return False
+            except Exception:
+                pass
+            try:
+                with urlopen(url, timeout=5) as response:
+                    if 200 <= response.status < 500:
+                        return True
+            except (URLError, TimeoutError, http.client.RemoteDisconnected):
+                time.sleep(2)
+        return False
+
     def pod_node_name(self, name: str, namespace: str) -> str:
         pod = self._get_pod(name, namespace)
         return pod.get("spec", {}).get("nodeName", "")
