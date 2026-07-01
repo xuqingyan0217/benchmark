@@ -99,8 +99,12 @@ def _run_serve_group(
         node_name = k8s.pod_node_name(pod_name, run_config.namespace)
         if not k8s.wait_pod_ready(pod_name, run_config.namespace):
             phase = _pod_phase(k8s, pod_name, run_config.namespace)
-            error_type = ErrorType.TARGET_POD_FAILED if phase == "Failed" else ErrorType.TARGET_POD_PENDING
-            message = "target pod failed before ready" if phase == "Failed" else "target pod ready timeout"
+            failure_reason = _pod_failure_reason(k8s, pod_name, run_config.namespace)
+            error_type = ErrorType.TARGET_POD_FAILED if phase == "Failed" or failure_reason else ErrorType.TARGET_POD_PENDING
+            if failure_reason:
+                message = f"target pod failed before ready: {failure_reason}"
+            else:
+                message = "target pod failed before ready" if phase == "Failed" else "target pod ready timeout"
             _write_failed_for_all_benches(run_config, serve_config, writer, pod_name, node_name, error_type, message)
             return
         if not k8s.wait_http_ready(endpoint + run_config.vendor_profile.health_path):
@@ -210,6 +214,13 @@ def _write_failed_for_all_benches(
 def _pod_phase(k8s: Any, pod_name: str, namespace: str) -> str:
     try:
         return k8s.pod_phase(pod_name, namespace)
+    except Exception:
+        return ""
+
+
+def _pod_failure_reason(k8s: Any, pod_name: str, namespace: str) -> str:
+    try:
+        return k8s.pod_failure_reason(pod_name, namespace)
     except Exception:
         return ""
 

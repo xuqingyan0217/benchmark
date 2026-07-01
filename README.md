@@ -315,10 +315,60 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
 
 如果资源规划算出需要 2 张或更多 GPU，而集群只有 1 张卡，target Pod 会因为资源不足 Pending，Master 会记录失败 case 和 events。
 
+## 错误和等待行为
+
+当前没有给 target Pod 配置 Kubernetes 层面的过期时间，也没有给 Pod 设置自动 TTL。target Pod 不会因为“模型下载耗时很久”或“整体运行时间很久”被 Kubernetes 自动删除。
+
+Master 仍然有程序内部等待边界：
+
+- 等 target Pod ready：默认 `600s`。
+- 等 target HTTP health：默认 `600s`。
+- 单次 `vllm-bench`：由 `BENCH_TIMEOUT_SECONDS` 控制。
+- 等 target Pod 删除：默认 `120s`，超时后尝试 force delete。
+
+这些等待不是 Pod 生命周期 TTL，而是 Master 判断某个阶段是否继续等待的上限。若超时，Master 会记录失败并主动清理 target Pod / Service。
+
+对于不可恢复的 target 容器错误，Master 不再等待 ready timeout。一旦轮询到以下 container reason，会立即判定该轮失败，写入 `failed_cases.jsonl`，抓取 logs/events，删除 target Pod / Service，然后进入下一组 `serve_hparams`：
+
+- `OOMKilled`
+- `Error`
+- `RunContainerError`
+- `CrashLoopBackOff`
+- `ImagePullBackOff`
+- `ErrImagePull`
+- `InvalidImageName`
+- `CreateContainerConfigError`
+- `CreateContainerError`
+
+例如显存不足导致 target Pod 变成 `Error` / `OOMKilled` 时，失败信息会类似：
+
+```text
+target pod failed before ready: OOMKilled
+```
+
+如果 target Pod 只是正常下载模型、初始化 vLLM，且没有出现上述 fatal reason，Master 会继续等待，直到 ready / health 成功或达到内部等待上限。
+
 ## 后续 TODO（已完成）
 
 详细执行计划见 `docs/implementation-plan.md`。
 
 ## 额外 TODO
-1. 错误处理，某一轮发生失败后，应该及时处理
-2. 获取指标信息，显存，能看到执行时的指标
+
+1. 模型挂载当前是hostpath，pod跨节点就无效了，最终需要使用nfs，pvc
+2. 当前直接测试的时候，有时会遇到显存顶不住的情况，导致任务直接失败，能否按照下面流程进行优化：
+```
+读取 GPU 信息
+    ↓
+读取模型信息
+    ↓
+预估：模型权重 + KV Cache + 运行开销 是否能放下
+    ↓
+如果不够，自动降低参数
+    ↓
+启动 vLLM serve
+    ↓
+确认 /v1/models 健康
+    ↓
+再执行 vllm bench serve
+```
+3. 获取指标信息，显存，能看到执行时的指标

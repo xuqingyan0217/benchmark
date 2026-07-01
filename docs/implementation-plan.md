@@ -186,6 +186,33 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - 删除一个 run 只需要删除一个目录树和一组 Kubernetes 资源。
 - 结果查询不再依赖零散路径。
 
+### 第 7 批：错误处理和等待策略
+
+目标：target Pod 出现明确不可恢复错误时及时失败、落盘和清理，不再无效等待 ready timeout；同时明确 Pod 生命周期和 Master 内部等待的边界。
+
+任务：
+
+- [x] 明确 target Pod 不配置 Kubernetes TTL 或 `activeDeadlineSeconds`。
+- [x] 明确模型下载耗时或整体运行耗时不会让 Kubernetes 自动删除 target Pod。
+- [x] 在 `wait_pod_ready()` 中检查 container waiting / terminated reason。
+- [x] 遇到 `OOMKilled` 立即返回失败。
+- [x] 遇到 `Error` 或 `RunContainerError` 立即返回失败。
+- [x] 遇到 `CrashLoopBackOff` 立即返回失败。
+- [x] 遇到 `ImagePullBackOff`、`ErrImagePull`、`InvalidImageName` 立即返回失败。
+- [x] 遇到 `CreateContainerConfigError`、`CreateContainerError` 立即返回失败。
+- [x] failed case 的错误信息包含具体 container reason。
+- [x] fatal reason 出现后立即抓取 logs/events、删除 target Pod/Service，并进入下一组 `serve_hparams`。
+- [ ] 将 target ready timeout 配置化。
+- [ ] 将 target health timeout 配置化。
+- [ ] 支持 timeout 为 `0` 表示只因 fatal reason 失败，不按时间上限删除正在正常启动/下载的 target Pod。
+- [ ] 为 Master 启动阶段失败增加 run-level error 落盘，例如 `run_errors.jsonl`。
+
+验收：
+
+- 显存不足导致 `OOMKilled` 时，不再等待默认 `600s` ready timeout。
+- `failed_cases.jsonl` 中能看到具体错误原因，例如 `target pod failed before ready: OOMKilled`。
+- target Pod 的删除仍由 Master 主动执行，而不是依赖 Kubernetes 自动过期。
+
 ## 当前执行顺序
 
 1. 第 1 批和第 2 批一起落地，因为它们是同一个架构拐点。
@@ -193,3 +220,4 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 3. 第 4 批资源规划依赖新的 target args 注入点。
 4. 第 5 批模型/cache 挂载解决 target Pod 反复下载模型的问题。
 5. 第 6 批统一持久化目录作为收口。
+6. 第 7 批错误处理和等待策略用于减少无效等待，并保护长时间模型下载场景。

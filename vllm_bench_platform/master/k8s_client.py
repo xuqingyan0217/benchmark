@@ -27,6 +27,19 @@ from urllib.request import urlopen
 from vllm_bench_platform.backend.kubectl_client import KubectlRunner, run_kubectl
 
 
+FATAL_CONTAINER_REASONS = {
+    "CrashLoopBackOff",
+    "ErrImagePull",
+    "ImagePullBackOff",
+    "InvalidImageName",
+    "CreateContainerConfigError",
+    "CreateContainerError",
+    "RunContainerError",
+    "OOMKilled",
+    "Error",
+}
+
+
 class KubectlMasterClient:
     """封装 target Pod/Service 生命周期需要的 kubectl 操作。"""
 
@@ -49,6 +62,8 @@ class KubectlMasterClient:
                 continue
             phase = pod.get("status", {}).get("phase", "")
             if phase == "Failed":
+                return False
+            if _has_fatal_container_state(pod):
                 return False
             for condition in pod.get("status", {}).get("conditions", []):
                 if condition.get("type") == "Ready" and condition.get("status") == "True":
@@ -74,6 +89,10 @@ class KubectlMasterClient:
     def pod_phase(self, name: str, namespace: str) -> str:
         pod = self._get_pod(name, namespace)
         return pod.get("status", {}).get("phase", "")
+
+    def pod_failure_reason(self, name: str, namespace: str) -> str:
+        pod = self._get_pod(name, namespace)
+        return _pod_failure_reason(pod)
 
     def get_pod_logs(self, name: str, namespace: str) -> str:
         try:
@@ -134,3 +153,26 @@ class KubectlMasterClient:
             self._runner(["kubectl", "delete", kind, name, "-n", namespace, "--ignore-not-found=true"], None, None)
         except subprocess.SubprocessError:
             raise
+
+
+def _has_fatal_container_state(pod: dict[str, Any]) -> bool:
+    return bool(_pod_failure_reason(pod))
+
+
+def _pod_failure_reason(pod: dict[str, Any]) -> str:
+    status = pod.get("status", {})
+    container_statuses = []
+    container_statuses.extend(status.get("containerStatuses", []) or [])
+    container_statuses.extend(status.get("initContainerStatuses", []) or [])
+    for container in container_statuses:
+        state = container.get("state", {})
+        waiting_reason = state.get("waiting", {}).get("reason")
+        terminated_reason = state.get("terminated", {}).get("reason")
+        last_terminated_reason = container.get("lastState", {}).get("terminated", {}).get("reason")
+        if waiting_reason in FATAL_CONTAINER_REASONS:
+            return str(waiting_reason)
+        if terminated_reason in FATAL_CONTAINER_REASONS:
+            return str(terminated_reason)
+        if last_terminated_reason in FATAL_CONTAINER_REASONS:
+            return str(last_terminated_reason)
+    return ""

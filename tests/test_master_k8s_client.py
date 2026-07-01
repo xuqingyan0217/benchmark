@@ -48,6 +48,30 @@ class MasterK8sClientTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual(calls[0][:4], ["kubectl", "get", "pod", "target"])
 
+    def test_wait_pod_ready_returns_false_for_oomkilled_container(self):
+        from vllm_bench_platform.master.k8s_client import KubectlMasterClient
+
+        calls = []
+
+        def runner(args, input_text=None, timeout=None):
+            calls.append(args)
+            if args[:4] == ["kubectl", "get", "pod", "target"]:
+                return (
+                    '{"status":{"phase":"Running","containerStatuses":['
+                    '{"state":{"terminated":{"reason":"OOMKilled"}}}'
+                    ']}}'
+                )
+            return ""
+
+        with patch("time.sleep"):
+            client = KubectlMasterClient(runner=runner)
+            ready = client.wait_pod_ready("target", "bench", timeout_seconds=5)
+            reason = client.pod_failure_reason("target", "bench")
+
+        self.assertFalse(ready)
+        self.assertEqual(reason, "OOMKilled")
+        self.assertEqual(calls[0][:4], ["kubectl", "get", "pod", "target"])
+
 
 if __name__ == "__main__":
     unittest.main()
