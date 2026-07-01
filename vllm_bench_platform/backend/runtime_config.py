@@ -42,7 +42,9 @@ class RuntimeEnvConfig:
     master_image: str
     target_vllm_image: str
     target_resource_name: str
-    target_gpu_memory_gb: float
+    target_resource_count: int
+    tensor_parallel_size: int
+    pipeline_parallel_size: int
     model_path: str
     served_model_name: str
     dtype: str
@@ -60,8 +62,6 @@ class RuntimeEnvConfig:
     model_mount_path: str | None = None
     model_cache_host_path: str | None = None
     model_cache_mount_path: str = "/root/.cache/huggingface"
-    hf_endpoint: str = "https://huggingface.co"
-    hf_token: str = ""
     health_path: str = "/health"
     target_port: int = 8000
 
@@ -75,7 +75,9 @@ def load_env_config(path: str | Path) -> RuntimeEnvConfig:
         master_image=_require(values, "MASTER_IMAGE"),
         target_vllm_image=_require(values, "TARGET_VLLM_IMAGE"),
         target_resource_name=_require(values, "TARGET_RESOURCE_NAME"),
-        target_gpu_memory_gb=float(_require(values, "TARGET_GPU_MEMORY_GB")),
+        target_resource_count=int(_require(values, "TARGET_RESOURCE_COUNT")),
+        tensor_parallel_size=int(_require(values, "TENSOR_PARALLEL_SIZE")),
+        pipeline_parallel_size=int(_require(values, "PIPELINE_PARALLEL_SIZE")),
         model_path=_require(values, "MODEL_PATH"),
         served_model_name=served_model_name,
         dtype=_require(values, "DTYPE"),
@@ -93,8 +95,6 @@ def load_env_config(path: str | Path) -> RuntimeEnvConfig:
         model_mount_path=_optional_value(values, "MODEL_MOUNT_PATH"),
         model_cache_host_path=_optional_value(values, "MODEL_CACHE_HOST_PATH"),
         model_cache_mount_path=values.get("MODEL_CACHE_MOUNT_PATH", "/root/.cache/huggingface"),
-        hf_endpoint=values.get("HF_ENDPOINT", "https://huggingface.co"),
-        hf_token=values.get("HF_TOKEN", values.get("HUGGING_FACE_HUB_TOKEN", "")),
         health_path=values.get("HEALTH_PATH", "/health"),
         target_port=int(values.get("TARGET_PORT", "8000")),
     )
@@ -119,7 +119,7 @@ def build_payload_from_files(
             "vendor_name": env.vendor_name,
             "target_vllm_image": env.target_vllm_image,
             "resource_name": env.target_resource_name,
-            "resource_count": 1,
+            "resource_count": env.target_resource_count,
             "env": env.target_env,
             "node_selector": {},
             "tolerations": env.pod_tolerations,
@@ -128,8 +128,8 @@ def build_payload_from_files(
             "port": env.target_port,
             "health_path": env.health_path,
             "extra_serve_args": [],
-            "tensor_parallel_size": 1,
-            "pipeline_parallel_size": 1,
+            "tensor_parallel_size": env.tensor_parallel_size,
+            "pipeline_parallel_size": env.pipeline_parallel_size,
         },
         "model_config": {
             "model_name": env.model_name,

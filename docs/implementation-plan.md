@@ -117,35 +117,28 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - YAML 拷到测试线后可按顺序 apply。
 - ConfigMap 内容包含本次 run 所有配置。
 
-### 第 4 批：GPU / TP / PP 动态计算
-
-目标：用 Master Pod 内的动态资源规划替代写死 GPU 数量与并行参数；资源规划直接读取 Hugging Face 元数据，不再挂载本地模型 metadata 文件。
+### 第 4 批：GPU / TP / PP 手工配置
 
 任务：
 
-- [x] 将 `reference/helper/cal_gpu.py` 整理进正式模块。
-- [x] 将 `reference/helper/cal_tp_pp.py` 整理进正式模块。
 - [x] 删除 `MODEL_METADATA_HOST_PATH` 配置。
 - [x] 删除 Master Job 的 `/model-metadata` hostPath 挂载。
 - [x] 删除 `configs/model_metadata.example/`。
-- [x] 通过 `MODEL_PATH` 识别 Hugging Face repo id。
-- [x] 当 `MODEL_PATH` 是本地路径时，使用 `MODEL_NAME` 作为 Hugging Face repo id。
-- [x] 从远端 `config.json` 获取 `num_attention_heads`。
-- [x] 通过 Hugging Face model info 的 sibling size 汇总模型权重大小。
-- [x] sibling size 缺失时，读取远端 `model.safetensors.index.json` 或 `pytorch_model.bin.index.json`。
-- [x] 支持 `HF_ENDPOINT` 配置 Hugging Face 服务地址。
-- [x] 支持 `HF_TOKEN` 访问私有/gated 模型；公开模型可留空。
-- [x] 根据单卡显存估算 GPU 数量。
-- [x] 根据 attention heads 和 GPU 数量计算 TP/PP。
-- [x] target Pod resource 使用动态 GPU 数量。
+- [x] 删除 Hugging Face 元数据访问和自动资源规划。
+- [x] 删除 `resource_planner.py`。
+- [x] 使用 `TARGET_RESOURCE_COUNT` 手工配置 target Pod 申请的 GPU / 国产卡数量。
+- [x] 使用 `TENSOR_PARALLEL_SIZE` 手工配置 TP。
+- [x] 使用 `PIPELINE_PARALLEL_SIZE` 手工配置 PP。
+- [x] backend 将上述三个 env 写入 `vendor_profile.json`。
+- [x] Master 原样使用 `vendor_profile` 中的资源数量和 TP/PP。
 - [x] vLLM serve args 注入 `--tensor-parallel-size` 和 `--pipeline-parallel-size`。
 
 验收：
 
-- `TP * PP == GPU_COUNT`。
-- TP 能整除 attention heads。
-- `MODEL_PATH` 和 `MODEL_NAME` 都无法作为 Hugging Face repo id 查询时直接失败。
-- Hugging Face 元数据缺少 attention heads 或权重大小时直接失败。
+- `TENSOR_PARALLEL_SIZE * PIPELINE_PARALLEL_SIZE == TARGET_RESOURCE_COUNT`。
+- Master Job 不再访问 Hugging Face。
+- Master Job manifest 不再包含 `TARGET_GPU_MEMORY_GB`、`HF_ENDPOINT`、`HF_TOKEN`。
+- TP 是否能整除 attention heads 由用户自行保证；填错时由 vLLM 启动失败暴露。
 
 ### 第 5 批：target 模型和 Hugging Face cache 挂载
 
@@ -160,7 +153,6 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - [x] target 容器内设置 `HF_HOME=MODEL_CACHE_MOUNT_PATH`。
 - [x] target 容器内设置 `HUGGINGFACE_HUB_CACHE=MODEL_CACHE_MOUNT_PATH`。
 - [x] 更新 `configs/enving.example.env`，为每个 env 项补充说明。
-- [x] 明确公开模型不需要 `HF_TOKEN`。
 
 验收：
 
@@ -202,9 +194,6 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 - [x] 遇到 `CreateContainerConfigError`、`CreateContainerError` 立即返回失败。
 - [x] failed case 的错误信息包含具体 container reason。
 - [x] fatal reason 出现后立即抓取 logs/events、删除 target Pod/Service，并进入下一组 `serve_hparams`。
-- [x] Hugging Face 元数据请求失败时自动重试 3 次。
-- [x] 资源规划失败时写入 `run_errors.jsonl`。
-- [x] `run_errors.jsonl` 记录错误类型、错误信息、时间和 traceback。
 - [ ] 将 target ready timeout 配置化。
 - [ ] 将 target health timeout 配置化。
 - [ ] 支持 timeout 为 `0` 表示只因 fatal reason 失败，不按时间上限删除正在正常启动/下载的 target Pod。
@@ -213,14 +202,13 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 
 - 显存不足导致 `OOMKilled` 时，不再等待默认 `600s` ready timeout。
 - `failed_cases.jsonl` 中能看到具体错误原因，例如 `target pod failed before ready: OOMKilled`。
-- Hugging Face SSL EOF、代理中断等资源规划错误会重试，最终失败时写入 `run_errors.jsonl`。
 - target Pod 的删除仍由 Master 主动执行，而不是依赖 Kubernetes 自动过期。
 
 ## 当前执行顺序
 
 1. 第 1 批和第 2 批一起落地，因为它们是同一个架构拐点。
 2. 跑通测试后，再进入第 3 批 YAML 生成。
-3. 第 4 批资源规划依赖新的 target args 注入点。
+3. 第 4 批手工资源配置依赖新的 target args 注入点。
 4. 第 5 批模型/cache 挂载解决 target Pod 反复下载模型的问题。
 5. 第 6 批统一持久化目录作为收口。
 6. 第 7 批错误处理和等待策略用于减少无效等待，并保护长时间模型下载场景。

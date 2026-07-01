@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 import time
-import traceback
 from typing import Any
 
 from vllm_bench_platform.master.analyzer import write_best_config
@@ -20,7 +19,6 @@ from vllm_bench_platform.master.matrix_loader import load_run_config_from_dir
 from vllm_bench_platform.master.result_writer import ResultWriter
 from vllm_bench_platform.master.service_builder import build_target_service, target_endpoint
 from vllm_bench_platform.master.target_pod_builder import build_target_pod, target_pod_name
-from vllm_bench_platform.resource_planner import apply_resource_plan, plan_model_resources
 from vllm_bench_platform.schemas import BenchConfig, ErrorType, RunConfig, ServeConfig
 
 
@@ -37,34 +35,11 @@ def run_controller(
     bench_binary: str = "vllm-bench",
     bench_timeout_seconds: int = 1800,
     bench_num_prompts: int = 10,
-    target_gpu_memory_gb: float = 0.0,
-    hf_endpoint: str = "https://huggingface.co",
-    hf_token: str | None = None,
-    resource_metadata_fetcher: Any | None = None,
 ) -> None:
     """执行 serve_config x bench_config 的最小可运行闭环。"""
     run_config = load_run_config_from_dir(config_dir, run_id=run_id, namespace=namespace)
     writer = ResultWriter(results_root, run_id)
     writer.initialize({"namespace": namespace, "config_dir": str(config_dir)})
-    if target_gpu_memory_gb <= 0:
-        error = ValueError("TARGET_GPU_MEMORY_GB must be greater than 0")
-        _write_run_error(writer, run_id, "RESOURCE_PLANNING_FAILED", str(error), error)
-        raise error
-    try:
-        run_config = apply_resource_plan(
-            run_config,
-            plan_model_resources(
-                memory_per_gpu_gb=target_gpu_memory_gb,
-                model_id=run_config.model_config.model_path,
-                fallback_model_id=run_config.model_config.model_name,
-                hf_endpoint=hf_endpoint,
-                hf_token=hf_token,
-                fetch_json=resource_metadata_fetcher,
-            ),
-        )
-    except Exception as exc:
-        _write_run_error(writer, run_id, "RESOURCE_PLANNING_FAILED", str(exc), exc)
-        raise
     k8s = k8s_client or KubectlMasterClient()
     bench = bench_client or DirectBenchRunner(
         results_root=results_root,
@@ -260,19 +235,6 @@ def _failed_case_record(
     }
 
 
-def _write_run_error(writer: ResultWriter, run_id: str, error_type: str, message: str, exc: BaseException) -> None:
-    now = datetime.now(UTC).isoformat()
-    writer.append_run_error(
-        {
-            "run_id": run_id,
-            "error_type": error_type,
-            "error_message": message,
-            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-            "time": now,
-        }
-    )
-
-
 def main() -> None:
     run_controller(
         config_dir=os.environ.get("CONFIG_DIR", "/configs"),
@@ -283,9 +245,6 @@ def main() -> None:
         bench_binary=os.environ.get("BENCH_BINARY", "vllm-bench"),
         bench_timeout_seconds=int(os.environ.get("BENCH_TIMEOUT_SECONDS", "1800")),
         bench_num_prompts=int(os.environ.get("BENCH_NUM_PROMPTS", "10")),
-        target_gpu_memory_gb=float(os.environ["TARGET_GPU_MEMORY_GB"]),
-        hf_endpoint=os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
-        hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
     )
 
 

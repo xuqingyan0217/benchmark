@@ -40,9 +40,6 @@ class MasterJobOptions:
     master_memory_request: str = "256Mi"
     master_memory_limit: str = "512Mi"
     pod_tolerations: list[dict[str, Any]] = field(default_factory=list)
-    target_gpu_memory_gb: float = 0.0
-    hf_endpoint: str = "https://huggingface.co"
-    hf_token: str = ""
 
 
 def build_namespace(namespace: str) -> dict[str, Any]:
@@ -263,9 +260,6 @@ def build_master_job(
                                 {"name": "BENCH_BINARY", "value": options.bench_binary},
                                 {"name": "BENCH_TIMEOUT_SECONDS", "value": str(options.bench_timeout_seconds)},
                                 {"name": "BENCH_NUM_PROMPTS", "value": str(options.bench_num_prompts)},
-                                {"name": "TARGET_GPU_MEMORY_GB", "value": str(options.target_gpu_memory_gb)},
-                                {"name": "HF_ENDPOINT", "value": options.hf_endpoint},
-                                {"name": "HF_TOKEN", "value": options.hf_token},
                             ],
                             "volumeMounts": volume_mounts,
                             # Master 容器只需要 CPU/内存，不允许出现 vendor.com/xpu 等 accelerator。

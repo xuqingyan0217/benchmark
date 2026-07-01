@@ -76,7 +76,7 @@ class MasterComponentsTest(unittest.TestCase):
         self.assertIn("s1", service["metadata"]["name"])
         self.assertEqual(target_endpoint(run_config, serve_config), f"http://{service['metadata']['name']}:8000")
 
-    def test_controller_resource_planning_applies_before_creating_target_pod(self):
+    def test_controller_uses_configured_resource_and_parallel_values(self):
         from vllm_bench_platform.master.master import run_controller
 
         class CapturingKubernetes:
@@ -108,8 +108,8 @@ class MasterComponentsTest(unittest.TestCase):
                         "vendor_name": "xpu",
                         "target_vllm_image": "local/vllm:xpu",
                         "resource_name": "vendor.com/xpu",
-                        "resource_count": 1,
-                        "tensor_parallel_size": 1,
+                        "resource_count": 2,
+                        "tensor_parallel_size": 2,
                         "pipeline_parallel_size": 1,
                     }
                 ),
@@ -129,13 +129,6 @@ class MasterComponentsTest(unittest.TestCase):
             )
             k8s = CapturingKubernetes()
 
-            def fetch_json(url, token):
-                if url.endswith("/resolve/main/config.json"):
-                    return {"num_attention_heads": 40}
-                if "/api/models/" in url:
-                    return {"siblings": [{"rfilename": "model.safetensors", "size": 40_000_000_000}]}
-                raise AssertionError(url)
-
             run_controller(
                 config_dir=config_dir,
                 results_root=root / "results",
@@ -145,14 +138,12 @@ class MasterComponentsTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=object(),
                 release_sleep_seconds=0,
-                target_gpu_memory_gb=24,
-                resource_metadata_fetcher=fetch_json,
             )
 
         container = k8s.pod["spec"]["containers"][0]
-        self.assertEqual(container["resources"]["requests"]["vendor.com/xpu"], 4)
+        self.assertEqual(container["resources"]["requests"]["vendor.com/xpu"], 2)
         args = container["args"]
-        self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "4")
+        self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "2")
         self.assertEqual(args[args.index("--pipeline-parallel-size") + 1], "1")
 
     def test_controller_records_container_failure_reason_without_waiting_for_timeout(self):
@@ -203,13 +194,6 @@ class MasterComponentsTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fetch_json(url, token):
-                if url.endswith("/resolve/main/config.json"):
-                    return {"num_attention_heads": 16}
-                if "/api/models/" in url:
-                    return {"siblings": [{"rfilename": "model.safetensors", "size": 1_000_000_000}]}
-                raise AssertionError(url)
-
             run_controller(
                 config_dir=config_dir,
                 results_root=root / "results",
@@ -219,8 +203,6 @@ class MasterComponentsTest(unittest.TestCase):
                 k8s_client=FailedKubernetes(),
                 bench_client=object(),
                 release_sleep_seconds=0,
-                target_gpu_memory_gb=8,
-                resource_metadata_fetcher=fetch_json,
             )
             failed = json.loads((root / "results" / "run-001" / "failed_cases.jsonl").read_text(encoding="utf-8"))
 

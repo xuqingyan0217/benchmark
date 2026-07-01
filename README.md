@@ -84,35 +84,20 @@ target vLLM Pod 挂载：
   - 可选 hostPath，用作 Hugging Face 下载缓存。
   - target 容器会把 `HF_HOME` 和 `HUGGINGFACE_HUB_CACHE` 指向 `MODEL_CACHE_MOUNT_PATH`。
 
-## 资源规划
+## 资源配置
 
-`TARGET_RESOURCE_COUNT` 不再手工填写。
+GPU 数量、TP、PP 直接由 env 手工填写，backend 会写入 `vendor_profile.json`，Master 创建 target Pod 时原样使用，不访问 Hugging Face，也不做自动估算。
 
-资源规划发生在 Master Pod 内：
+关键字段：
 
-1. `master-controller` 启动。
-2. 读取 `/configs` 生成 `RunConfig`。
-3. 使用 `MODEL_PATH` 作为 Hugging Face repo id 读取 `config.json`；如果 `MODEL_PATH` 是本地路径，则使用 `MODEL_NAME` 作为 repo id。
-4. 通过 Hugging Face model info 的 sibling size 汇总权重大小；如果 size 缺失，则读取远端 `model.safetensors.index.json` 或 `pytorch_model.bin.index.json`。
-5. 根据 `TARGET_GPU_MEMORY_GB` 估算 GPU 数量。
-6. 根据 GPU 数量和 attention heads 计算：
-   - `--tensor-parallel-size`
-   - `--pipeline-parallel-size`
-7. 创建 target vLLM Pod 时注入 GPU 资源数和 TP / PP 参数。
-
-当前估算规则在 `vllm_bench_platform/resource_planner.py`：
-
-- `estimated_vram_gb = model_weight_size_gb * 1.8`
-- `gpu_count = ceil(estimated_vram_gb / TARGET_GPU_MEMORY_GB)`
-- 如果多卡且 GPU 数量为奇数，则向上补成偶数。
-- TP 选择能整除 `gpu_count` 且能整除 `num_attention_heads` 的最大值。
-- `PP = gpu_count / TP`
+- `TARGET_RESOURCE_COUNT`：target Pod 申请的 GPU / 国产卡数量。
+- `TENSOR_PARALLEL_SIZE`：注入 vLLM 的 `--tensor-parallel-size`。
+- `PIPELINE_PARALLEL_SIZE`：注入 vLLM 的 `--pipeline-parallel-size`。
 
 约束：
 
-- `TP * PP == GPU_COUNT`
-- `num_attention_heads % TP == 0`
-- `MODEL_PATH` 和 `MODEL_NAME` 都无法作为 Hugging Face repo id 查询时，Master Job 会直接失败。
+- `TENSOR_PARALLEL_SIZE * PIPELINE_PARALLEL_SIZE == TARGET_RESOURCE_COUNT`
+- TP 是否能整除模型 attention heads 由用户自行保证；填错时 vLLM 启动阶段会失败，Master 会记录 target 失败和 events。
 
 ## 模型加载和下载
 
@@ -194,7 +179,9 @@ NAMESPACE=bench
 MASTER_IMAGE=vllm-bench-platform/master:local
 TARGET_VLLM_IMAGE=vllm/vllm-openai:v0.8.5
 TARGET_RESOURCE_NAME=nvidia.com/gpu
-TARGET_GPU_MEMORY_GB=8
+TARGET_RESOURCE_COUNT=1
+TENSOR_PARALLEL_SIZE=1
+PIPELINE_PARALLEL_SIZE=1
 MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
 MODEL_NAME=Qwen2.5-0.5B-Instruct
 SERVED_MODEL_NAME=Qwen2.5-0.5B-Instruct
@@ -203,8 +190,6 @@ MODEL_HOST_PATH=
 MODEL_MOUNT_PATH=
 MODEL_CACHE_HOST_PATH=/tmp/vllm-bench/model-cache
 MODEL_CACHE_MOUNT_PATH=/root/.cache/huggingface
-HF_ENDPOINT=https://huggingface.co
-HF_TOKEN=
 PERSIST_ROOT=/tmp/vllm-bench
 BENCH_BINARY=vllm-bench
 BENCH_TIMEOUT_SECONDS=600
@@ -291,7 +276,7 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
    ```
 
 3. Master Job 启动，不申请 GPU。
-4. Master 通过 Hugging Face API 读取模型元数据，估算结果为 1 张 GPU。
+4. Master 使用 env 中的 `TARGET_RESOURCE_COUNT=1`、`TENSOR_PARALLEL_SIZE=1`、`PIPELINE_PARALLEL_SIZE=1`。
 5. Master 创建一个 target vLLM Pod，请求：
 
    ```yaml
@@ -313,7 +298,7 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
    /tmp/vllm-bench/bench/run-001
    ```
 
-如果资源规划算出需要 2 张或更多 GPU，而集群只有 1 张卡，target Pod 会因为资源不足 Pending，Master 会记录失败 case 和 events。
+如果手工配置的 `TARGET_RESOURCE_COUNT` 超过集群可用资源，target Pod 会因为资源不足 Pending，Master 会记录失败 case 和 events。
 
 ## 错误和等待行为
 
@@ -348,13 +333,6 @@ target pod failed before ready: OOMKilled
 
 如果 target Pod 只是正常下载模型、初始化 vLLM，且没有出现上述 fatal reason，Master 会继续等待，直到 ready / health 成功或达到内部等待上限。
 
-Master 启动阶段的资源规划错误会写入：
-
-```text
-run_errors.jsonl
-```
-
-例如 Hugging Face 访问失败、TLS/代理中断、模型元数据缺失等发生在 target Pod 创建之前的问题，会记录为 run-level error。Hugging Face JSON 请求当前会自动重试 3 次；如果仍失败，Master Job 会失败，并在 `run_errors.jsonl` 中保留错误信息和 traceback。
 
 ## 后续 TODO（已完成）
 

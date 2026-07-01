@@ -56,7 +56,7 @@ class JobBuilderTest(unittest.TestCase):
         self.assertEqual(mount_paths["results"], "/results/run-001")
         self.assertEqual(mount_paths["work"], "/work")
 
-    def test_master_job_exposes_hugging_face_planning_env(self):
+    def test_master_job_only_exposes_controller_runtime_env(self):
         from vllm_bench_platform.backend.job_builder import build_master_job
         from vllm_bench_platform.backend.submit_job import SubmitJobRequest
 
@@ -71,7 +71,7 @@ class JobBuilderTest(unittest.TestCase):
             item["name"]: item["value"]
             for item in pod_spec["containers"][0]["env"]
         }
-        self.assertEqual(env["HF_ENDPOINT"], "https://huggingface.co")
+        self.assertEqual(set(env), {"RUN_ID", "NAMESPACE", "BENCH_BINARY", "BENCH_TIMEOUT_SECONDS", "BENCH_NUM_PROMPTS"})
 
 
 if __name__ == "__main__":
