@@ -65,7 +65,6 @@ class BackendManifestRendererTest(unittest.TestCase):
                         "TARGET_VLLM_IMAGE=local/vllm:xpu",
                         "TARGET_RESOURCE_NAME=vendor.com/xpu",
                         "TARGET_GPU_MEMORY_GB=24",
-                        "MODEL_METADATA_HOST_PATH=/models/qwen",
                         "MODEL_PATH=/models/qwen",
                         "SERVED_MODEL_NAME=qwen",
                         "DTYPE=float16",

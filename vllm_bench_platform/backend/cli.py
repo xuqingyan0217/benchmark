@@ -136,8 +136,9 @@ def _master_options_from_env(env) -> MasterJobOptions:
         master_memory_request=env.master_memory_request,
         master_memory_limit=env.master_memory_limit,
         pod_tolerations=env.pod_tolerations,
-        model_metadata_host_path=env.model_metadata_host_path,
         target_gpu_memory_gb=env.target_gpu_memory_gb,
+        hf_endpoint=env.hf_endpoint,
+        hf_token=env.hf_token,
     )
 
 

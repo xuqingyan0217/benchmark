@@ -34,10 +34,15 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
                         "TARGET_VLLM_IMAGE=local/vllm:xpu",
                         "TARGET_RESOURCE_NAME=vendor.com/xpu",
                         "TARGET_GPU_MEMORY_GB=24",
-                        "MODEL_METADATA_HOST_PATH=/models/qwen",
                         "MODEL_PATH=/models/qwen",
                         "SERVED_MODEL_NAME=qwen",
                         "DTYPE=float16",
+                        "MODEL_HOST_PATH=/mnt/models/qwen",
+                        "MODEL_MOUNT_PATH=/models/qwen",
+                        "MODEL_CACHE_HOST_PATH=/mnt/cache/hf",
+                        "MODEL_CACHE_MOUNT_PATH=/cache/huggingface",
+                        "HF_ENDPOINT=https://hf-mirror.local",
+                        "HF_TOKEN=token-123",
                         "PERSIST_ROOT=/tmp/vllm-bench",
                         "BENCH_BINARY=/usr/local/bin/vllm-bench",
                         "BENCH_TIMEOUT_SECONDS=30",
@@ -84,7 +89,6 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
         self.assertEqual(payload["namespace"], "bench")
         self.assertEqual(payload["vendor_profile"]["target_vllm_image"], "local/vllm:xpu")
         self.assertEqual(env.target_gpu_memory_gb, 24)
-        self.assertEqual(env.model_metadata_host_path, "/models/qwen")
         self.assertEqual(payload["vendor_profile"]["resource_count"], 1)
         self.assertEqual(payload["vendor_profile"]["tensor_parallel_size"], 1)
         self.assertEqual(payload["vendor_profile"]["pipeline_parallel_size"], 1)
@@ -94,6 +98,12 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
             [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}],
         )
         self.assertEqual(payload["model_config"]["model_path"], "/models/qwen")
+        self.assertEqual(payload["model_config"]["model_host_path"], "/mnt/models/qwen")
+        self.assertEqual(payload["model_config"]["model_mount_path"], "/models/qwen")
+        self.assertEqual(payload["model_config"]["model_cache_host_path"], "/mnt/cache/hf")
+        self.assertEqual(payload["model_config"]["model_cache_mount_path"], "/cache/huggingface")
+        self.assertEqual(env.hf_endpoint, "https://hf-mirror.local")
+        self.assertEqual(env.hf_token, "token-123")
         self.assertNotIn("--re te", payload["bench_hparams"][0])
         self.assertEqual(payload["bench_hparams"][0]["--request-rate"], "inf")
 
@@ -128,8 +138,9 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
                         "effect": "NoSchedule",
                     }
                 ],
-                model_metadata_host_path="/models/qwen",
                 target_gpu_memory_gb=24,
+                hf_endpoint="https://hf-mirror.local",
+                hf_token="token-123",
             ),
         )
 
@@ -154,13 +165,13 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
         self.assertEqual(master_env["BENCH_BINARY"], "/usr/local/bin/vllm-bench")
         self.assertEqual(master_env["BENCH_TIMEOUT_SECONDS"], "30")
         self.assertEqual(master_env["BENCH_NUM_PROMPTS"], "10")
-        self.assertEqual(master_env["MODEL_METADATA_DIR"], "/model-metadata")
         self.assertEqual(master_env["TARGET_GPU_MEMORY_GB"], "24")
+        self.assertEqual(master_env["HF_ENDPOINT"], "https://hf-mirror.local")
+        self.assertEqual(master_env["HF_TOKEN"], "token-123")
         volume_names = {volume["name"] for volume in job["spec"]["template"]["spec"]["volumes"]}
-        self.assertIn("model-metadata", volume_names)
+        self.assertEqual(volume_names, {"configs", "results", "work"})
         mount_paths = {mount["name"]: mount for mount in containers["master-controller"]["volumeMounts"]}
-        self.assertEqual(mount_paths["model-metadata"]["mountPath"], "/model-metadata")
-        self.assertTrue(mount_paths["model-metadata"]["readOnly"])
+        self.assertEqual(set(mount_paths), {"configs", "results", "work"})
         self.assertIn("python3", containers["master-controller"]["command"])
         self.assertEqual(
             job["spec"]["template"]["spec"]["tolerations"],

@@ -1,5 +1,5 @@
-import json
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -73,18 +73,15 @@ class FakeBenchClient:
             }
 
 
-def write_model_metadata(root: Path, *, total_size=1_000_000_000, heads=16) -> Path:
-    metadata_dir = root / "model-metadata"
-    metadata_dir.mkdir()
-    (metadata_dir / "model.safetensors.index.json").write_text(
-        json.dumps({"metadata": {"total_size": total_size}}),
-        encoding="utf-8",
-    )
-    (metadata_dir / "config.json").write_text(
-        json.dumps({"num_attention_heads": heads}),
-        encoding="utf-8",
-    )
-    return metadata_dir
+def fake_hf_fetcher(total_size=1_000_000_000, heads=16):
+    def fetch_json(url, token):
+        if url.endswith("/resolve/main/config.json"):
+            return {"num_attention_heads": heads}
+        if "/api/models/" in url:
+            return {"siblings": [{"rfilename": "model.safetensors", "size": total_size}]}
+        raise AssertionError(url)
+
+    return fetch_json
 
 
 class MasterControllerLoopTest(unittest.TestCase):
@@ -131,7 +128,7 @@ class MasterControllerLoopTest(unittest.TestCase):
             (config_dir / "model_config.json").write_text(
                 json.dumps(
                     {
-                        "model_name": "qwen",
+                        "model_name": "org/qwen",
                         "model_path": "/models/qwen",
                         "served_model_name": "qwen",
                         "trust_remote_code": True,
@@ -142,7 +139,6 @@ class MasterControllerLoopTest(unittest.TestCase):
             )
             k8s = FakeKubernetesClient()
             bench = FakeBenchClient()
-            metadata_dir = write_model_metadata(root)
 
             run_controller(
                 config_dir=config_dir,
@@ -153,8 +149,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=bench,
                 release_sleep_seconds=0,
-                model_metadata_dir=metadata_dir,
                 target_gpu_memory_gb=8,
+                resource_metadata_fetcher=fake_hf_fetcher(),
             )
 
             summary = (root / "results" / "run-001" / "summary.jsonl").read_text(encoding="utf-8").splitlines()
@@ -194,7 +190,7 @@ class MasterControllerLoopTest(unittest.TestCase):
             (config_dir / "model_config.json").write_text(
                 json.dumps(
                     {
-                        "model_name": "qwen",
+                        "model_name": "org/qwen",
                         "model_path": "/models/qwen",
                         "served_model_name": "qwen",
                         "trust_remote_code": True,
@@ -207,7 +203,6 @@ class MasterControllerLoopTest(unittest.TestCase):
             k8s.phase_after_ready_timeout = "Failed"
             k8s.wait_pod_ready = lambda name, namespace, timeout_seconds=600: False
             bench = FakeBenchClient()
-            metadata_dir = write_model_metadata(root)
 
             run_controller(
                 config_dir=config_dir,
@@ -218,8 +213,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=bench,
                 release_sleep_seconds=0,
-                model_metadata_dir=metadata_dir,
                 target_gpu_memory_gb=8,
+                resource_metadata_fetcher=fake_hf_fetcher(),
             )
 
             failed = [
@@ -281,7 +276,7 @@ class MasterControllerLoopTest(unittest.TestCase):
             (config_dir / "model_config.json").write_text(
                 json.dumps(
                     {
-                        "model_name": "qwen",
+                        "model_name": "org/qwen",
                         "model_path": "/models/qwen",
                         "served_model_name": "qwen",
                         "trust_remote_code": True,
@@ -303,8 +298,8 @@ class MasterControllerLoopTest(unittest.TestCase):
                     bench_binary="/usr/local/bin/vllm-bench",
                     bench_timeout_seconds=660,
                     bench_num_prompts=20,
-                    model_metadata_dir=write_model_metadata(root),
                     target_gpu_memory_gb=8,
+                    resource_metadata_fetcher=fake_hf_fetcher(),
                 )
 
         self.assertEqual(created_options[0]["bench_binary"], "/usr/local/bin/vllm-bench")

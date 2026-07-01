@@ -99,9 +99,7 @@ class MasterComponentsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_dir = root / "configs"
-            metadata_dir = root / "model-metadata"
             config_dir.mkdir()
-            metadata_dir.mkdir()
             (config_dir / "serve_hparams.json").write_text(json.dumps([{"_benchmark_name": "s1"}]), encoding="utf-8")
             (config_dir / "bench_hparams.json").write_text(json.dumps([{"_benchmark_name": "b1"}]), encoding="utf-8")
             (config_dir / "vendor_profile.json").write_text(
@@ -120,7 +118,7 @@ class MasterComponentsTest(unittest.TestCase):
             (config_dir / "model_config.json").write_text(
                 json.dumps(
                     {
-                        "model_name": "qwen",
+                        "model_name": "org/model",
                         "model_path": "/models/qwen",
                         "served_model_name": "qwen",
                         "trust_remote_code": True,
@@ -129,12 +127,14 @@ class MasterComponentsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (metadata_dir / "model.safetensors.index.json").write_text(
-                json.dumps({"metadata": {"total_size": 40_000_000_000}}),
-                encoding="utf-8",
-            )
-            (metadata_dir / "config.json").write_text(json.dumps({"num_attention_heads": 40}), encoding="utf-8")
             k8s = CapturingKubernetes()
+
+            def fetch_json(url, token):
+                if url.endswith("/resolve/main/config.json"):
+                    return {"num_attention_heads": 40}
+                if "/api/models/" in url:
+                    return {"siblings": [{"rfilename": "model.safetensors", "size": 40_000_000_000}]}
+                raise AssertionError(url)
 
             run_controller(
                 config_dir=config_dir,
@@ -145,8 +145,8 @@ class MasterComponentsTest(unittest.TestCase):
                 k8s_client=k8s,
                 bench_client=object(),
                 release_sleep_seconds=0,
-                model_metadata_dir=metadata_dir,
                 target_gpu_memory_gb=24,
+                resource_metadata_fetcher=fetch_json,
             )
 
         container = k8s.pod["spec"]["containers"][0]
@@ -154,6 +154,37 @@ class MasterComponentsTest(unittest.TestCase):
         args = container["args"]
         self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "4")
         self.assertEqual(args[args.index("--pipeline-parallel-size") + 1], "1")
+
+    def test_target_pod_mounts_model_and_cache_when_configured(self):
+        from tests.test_backend_submit_job import valid_payload
+        from vllm_bench_platform.backend.submit_job import SubmitJobRequest
+        from vllm_bench_platform.master.target_pod_builder import build_target_pod
+
+        payload = valid_payload()
+        payload["model_config"].update(
+            {
+                "model_path": "/models/qwen",
+                "model_host_path": "/mnt/models/qwen",
+                "model_mount_path": "/models/qwen",
+                "model_cache_host_path": "/mnt/cache/hf",
+                "model_cache_mount_path": "/cache/huggingface",
+            }
+        )
+        run_config = SubmitJobRequest.from_payload(payload).run_config
+
+        pod = build_target_pod(run_config, run_config.serve_configs[0])
+
+        volumes = {volume["name"]: volume for volume in pod["spec"]["volumes"]}
+        self.assertEqual(volumes["model"]["hostPath"]["path"], "/mnt/models/qwen")
+        self.assertEqual(volumes["model-cache"]["hostPath"]["type"], "DirectoryOrCreate")
+        container = pod["spec"]["containers"][0]
+        mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+        self.assertEqual(mounts["model"]["mountPath"], "/models/qwen")
+        self.assertTrue(mounts["model"]["readOnly"])
+        self.assertEqual(mounts["model-cache"]["mountPath"], "/cache/huggingface")
+        env = {item["name"]: item["value"] for item in container["env"]}
+        self.assertEqual(env["HF_HOME"], "/cache/huggingface")
+        self.assertEqual(env["HUGGINGFACE_HUB_CACHE"], "/cache/huggingface")
 
     def test_result_writer_creates_layout_summary_failed_and_best_config(self):
         from vllm_bench_platform.master.analyzer import write_best_config

@@ -40,9 +40,9 @@ class MasterJobOptions:
     master_memory_request: str = "256Mi"
     master_memory_limit: str = "512Mi"
     pod_tolerations: list[dict[str, Any]] = field(default_factory=list)
-    model_metadata_host_path: str = ""
     target_gpu_memory_gb: float = 0.0
-    model_metadata_mount_path: str = "/model-metadata"
+    hf_endpoint: str = "https://huggingface.co"
+    hf_token: str = ""
 
 
 def build_namespace(namespace: str) -> dict[str, Any]:
@@ -220,29 +220,11 @@ def build_master_job(
             "emptyDir": {},
         },
     ]
-    if options.model_metadata_host_path:
-        volumes.append(
-            {
-                "name": "model-metadata",
-                "hostPath": {
-                    "path": options.model_metadata_host_path,
-                    "type": "Directory",
-                },
-            }
-        )
     volume_mounts = [
         {"name": "configs", "mountPath": "/configs"},
         {"name": "results", "mountPath": f"/results/{run_config.run_id}"},
         {"name": "work", "mountPath": "/work"},
     ]
-    if options.model_metadata_host_path:
-        volume_mounts.append(
-            {
-                "name": "model-metadata",
-                "mountPath": options.model_metadata_mount_path,
-                "readOnly": True,
-            }
-        )
     # 镜像名先使用占位默认值，真正镜像仓库会在后续部署/CI change 中确认。
     # 当前 builder 的重点是锁定 Pod 结构、挂载和资源申请规则。
     return {
@@ -281,8 +263,9 @@ def build_master_job(
                                 {"name": "BENCH_BINARY", "value": options.bench_binary},
                                 {"name": "BENCH_TIMEOUT_SECONDS", "value": str(options.bench_timeout_seconds)},
                                 {"name": "BENCH_NUM_PROMPTS", "value": str(options.bench_num_prompts)},
-                                {"name": "MODEL_METADATA_DIR", "value": options.model_metadata_mount_path},
                                 {"name": "TARGET_GPU_MEMORY_GB", "value": str(options.target_gpu_memory_gb)},
+                                {"name": "HF_ENDPOINT", "value": options.hf_endpoint},
+                                {"name": "HF_TOKEN", "value": options.hf_token},
                             ],
                             "volumeMounts": volume_mounts,
                             # Master 容器只需要 CPU/内存，不允许出现 vendor.com/xpu 等 accelerator。

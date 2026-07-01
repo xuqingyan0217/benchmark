@@ -135,6 +135,10 @@ class ModelConfig:
     trust_remote_code: bool
     dtype: str
     tokenizer_path: str | None = None
+    model_host_path: str | None = None
+    model_mount_path: str | None = None
+    model_cache_host_path: str | None = None
+    model_cache_mount_path: str = "/root/.cache/huggingface"
 
     def __post_init__(self) -> None:
         # tokenizer_path 可选，其余字段是启动 vLLM server 的最低输入。
@@ -142,6 +146,14 @@ class ModelConfig:
         _require_text("model_path", self.model_path)
         _require_text("served_model_name", self.served_model_name)
         _require_text("dtype", self.dtype)
+        if bool(self.model_host_path) != bool(self.model_mount_path):
+            raise ValidationError("model_host_path and model_mount_path must be configured together")
+        if self.model_host_path:
+            _require_text("model_host_path", self.model_host_path)
+            _require_text("model_mount_path", self.model_mount_path)
+        if self.model_cache_host_path:
+            _require_text("model_cache_host_path", self.model_cache_host_path)
+            _require_text("model_cache_mount_path", self.model_cache_mount_path)
 
 
 @dataclass(frozen=True)

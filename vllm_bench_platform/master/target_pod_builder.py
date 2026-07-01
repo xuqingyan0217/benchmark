@@ -61,6 +61,61 @@ def build_target_pod(run_config: RunConfig, serve_config: ServeConfig) -> dict[s
         if value is not True:
             args.append(str(value))
     args.extend(vendor.extra_serve_args)
+    volume_mounts: list[dict[str, Any]] = [
+        {
+            "name": "dshm",
+            "mountPath": "/dev/shm",
+        }
+    ]
+    volumes: list[dict[str, Any]] = [
+        {
+            "name": "dshm",
+            "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": vendor.shm_size,
+            },
+        }
+    ]
+    env = [{"name": name, "value": value} for name, value in vendor.env.items()]
+    if model.model_host_path and model.model_mount_path:
+        volumes.append(
+            {
+                "name": "model",
+                "hostPath": {
+                    "path": model.model_host_path,
+                    "type": "Directory",
+                },
+            }
+        )
+        volume_mounts.append(
+            {
+                "name": "model",
+                "mountPath": model.model_mount_path,
+                "readOnly": True,
+            }
+        )
+    if model.model_cache_host_path:
+        volumes.append(
+            {
+                "name": "model-cache",
+                "hostPath": {
+                    "path": model.model_cache_host_path,
+                    "type": "DirectoryOrCreate",
+                },
+            }
+        )
+        volume_mounts.append(
+            {
+                "name": "model-cache",
+                "mountPath": model.model_cache_mount_path,
+            }
+        )
+        env.extend(
+            [
+                {"name": "HF_HOME", "value": model.model_cache_mount_path},
+                {"name": "HUGGINGFACE_HUB_CACHE", "value": model.model_cache_mount_path},
+            ]
+        )
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "containers": [
@@ -75,7 +130,7 @@ def build_target_pod(run_config: RunConfig, serve_config: ServeConfig) -> dict[s
                         "name": "http",
                     }
                 ],
-                "env": [{"name": name, "value": value} for name, value in vendor.env.items()],
+                "env": env,
                 "resources": {
                     "requests": {
                         vendor.resource_name: vendor.resource_count,
@@ -84,23 +139,10 @@ def build_target_pod(run_config: RunConfig, serve_config: ServeConfig) -> dict[s
                         vendor.resource_name: vendor.resource_count,
                     },
                 },
-                "volumeMounts": [
-                    {
-                        "name": "dshm",
-                        "mountPath": "/dev/shm",
-                    }
-                ],
+                "volumeMounts": volume_mounts,
             }
         ],
-        "volumes": [
-            {
-                "name": "dshm",
-                "emptyDir": {
-                    "medium": "Memory",
-                    "sizeLimit": vendor.shm_size,
-                },
-            }
-        ],
+        "volumes": volumes,
     }
     if vendor.node_selector:
         pod_spec["nodeSelector"] = vendor.node_selector

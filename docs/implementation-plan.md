@@ -25,6 +25,9 @@
 - `bench_agent.py` HTTP agent
 - `localhost:18080` agent 通信
 - 旧 `vllm bench serve` Python CLI 调用路径
+- `MODEL_METADATA_HOST_PATH`
+- `/model-metadata` Master 挂载
+- `configs/model_metadata.example/`
 
 ## 关于 Master 镜像为什么还有 kubectl
 
@@ -116,15 +119,22 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 
 ### 第 4 批：GPU / TP / PP 动态计算
 
-目标：用 master Pod 内的动态资源规划替代写死 GPU 数量与并行参数，backend 只负责挂载模型 metadata 目录。
+目标：用 Master Pod 内的动态资源规划替代写死 GPU 数量与并行参数；资源规划直接读取 Hugging Face 元数据，不再挂载本地模型 metadata 文件。
 
 任务：
 
 - [x] 将 `reference/helper/cal_gpu.py` 整理进正式模块。
 - [x] 将 `reference/helper/cal_tp_pp.py` 整理进正式模块。
-- [x] 从模型目录读取 `model.safetensors.index.json`。
-- [x] 从模型目录读取 `config.json`。
-- [x] 将模型 metadata 目录挂载到 Master Pod。
+- [x] 删除 `MODEL_METADATA_HOST_PATH` 配置。
+- [x] 删除 Master Job 的 `/model-metadata` hostPath 挂载。
+- [x] 删除 `configs/model_metadata.example/`。
+- [x] 通过 `MODEL_PATH` 识别 Hugging Face repo id。
+- [x] 当 `MODEL_PATH` 是本地路径时，使用 `MODEL_NAME` 作为 Hugging Face repo id。
+- [x] 从远端 `config.json` 获取 `num_attention_heads`。
+- [x] 通过 Hugging Face model info 的 sibling size 汇总模型权重大小。
+- [x] sibling size 缺失时，读取远端 `model.safetensors.index.json` 或 `pytorch_model.bin.index.json`。
+- [x] 支持 `HF_ENDPOINT` 配置 Hugging Face 服务地址。
+- [x] 支持 `HF_TOKEN` 访问私有/gated 模型；公开模型可留空。
 - [x] 根据单卡显存估算 GPU 数量。
 - [x] 根据 attention heads 和 GPU 数量计算 TP/PP。
 - [x] target Pod resource 使用动态 GPU 数量。
@@ -134,9 +144,32 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 
 - `TP * PP == GPU_COUNT`。
 - TP 能整除 attention heads。
-- 缺少必要模型 metadata 时直接失败。
+- `MODEL_PATH` 和 `MODEL_NAME` 都无法作为 Hugging Face repo id 查询时直接失败。
+- Hugging Face 元数据缺少 attention heads 或权重大小时直接失败。
 
-### 第 5 批：统一持久化目录
+### 第 5 批：target 模型和 Hugging Face cache 挂载
+
+目标：避免每组 `serve_hparams` 创建新 target Pod 时重复下载模型，同时支持节点本地模型目录。
+
+任务：
+
+- [x] 在 `ModelConfig` 中加入 `model_host_path` 和 `model_mount_path`。
+- [x] 在 target Pod 中将 `MODEL_HOST_PATH` 只读挂载到 `MODEL_MOUNT_PATH`。
+- [x] 在 `ModelConfig` 中加入 `model_cache_host_path` 和 `model_cache_mount_path`。
+- [x] 在 target Pod 中将 `MODEL_CACHE_HOST_PATH` 挂载到 `MODEL_CACHE_MOUNT_PATH`。
+- [x] target 容器内设置 `HF_HOME=MODEL_CACHE_MOUNT_PATH`。
+- [x] target 容器内设置 `HUGGINGFACE_HUB_CACHE=MODEL_CACHE_MOUNT_PATH`。
+- [x] 更新 `configs/enving.example.env`，为每个 env 项补充说明。
+- [x] 明确公开模型不需要 `HF_TOKEN`。
+
+验收：
+
+- 不配置模型目录时，target Pod 可通过 Hugging Face 下载模型。
+- 配置 `MODEL_CACHE_HOST_PATH` 后，首次下载会落到宿主机 cache 目录。
+- 后续调度到同一节点并挂同一 cache 目录的 target Pod 会复用模型缓存。
+- 配置 `MODEL_HOST_PATH` 和 `MODEL_MOUNT_PATH` 后，vLLM 可直接从本地模型目录加载。
+
+### 第 6 批：统一持久化目录
 
 目标：PVC、hostPath 和后续持久化盘都归到同一个根目录，方便统一删除。
 
@@ -158,4 +191,5 @@ Master 容器运行时仍然需要操作 Kubernetes API，因为它负责：
 1. 第 1 批和第 2 批一起落地，因为它们是同一个架构拐点。
 2. 跑通测试后，再进入第 3 批 YAML 生成。
 3. 第 4 批资源规划依赖新的 target args 注入点。
-4. 第 5 批统一持久化目录作为收口。
+4. 第 5 批模型/cache 挂载解决 target Pod 反复下载模型的问题。
+5. 第 6 批统一持久化目录作为收口。

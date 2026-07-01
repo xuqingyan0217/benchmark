@@ -15,7 +15,7 @@
 2. Master Job
    - Kubernetes Job，Pod 内只有一个容器：`master-controller`。
    - 读取 `/configs` 中的四个 JSON 配置文件。
-   - 读取 `/model-metadata` 中的模型 metadata，计算 GPU 数量、TP、PP。
+   - 通过 Hugging Face API 读取模型 config 和权重文件大小，计算 GPU 数量、TP、PP。
    - 按每组 `serve_hparams` 创建 target vLLM Pod 和 Service。
    - 等待 target ready / health 成功后，直接调用容器内的 `vllm-bench`。
    - 抓取 target logs / events，清理 target Service / Pod，写入结果。
@@ -56,13 +56,6 @@ Master Job 挂载：
     - `vendor_profile.json`
     - `model_config.json`
 
-- `/model-metadata`
-  - 来源：`MODEL_METADATA_HOST_PATH` hostPath，只读挂载。
-  - 只应包含轻量 metadata：
-    - `config.json`
-    - `model.safetensors.index.json`
-  - 不要指向完整模型权重目录。挂载不会把文件复制进 Master 镜像，但挂完整模型目录会让 Master 调度依赖模型所在节点，也会混淆职责边界。
-
 - `/results/{run_id}`
   - 来源：PVC。
   - PVC 对应的 hostPath 为：
@@ -83,6 +76,14 @@ target vLLM Pod 挂载：
   - 来源：memory emptyDir。
   - 大小由 `vendor_profile.shm_size` 控制，默认 `16Gi`。
 
+- `MODEL_HOST_PATH -> MODEL_MOUNT_PATH`
+  - 可选 hostPath，只读挂载完整模型目录。
+  - 如果启用，应把 `MODEL_PATH` 设置为 target 容器内可见的 `MODEL_MOUNT_PATH` 或其子目录。
+
+- `MODEL_CACHE_HOST_PATH -> MODEL_CACHE_MOUNT_PATH`
+  - 可选 hostPath，用作 Hugging Face 下载缓存。
+  - target 容器会把 `HF_HOME` 和 `HUGGINGFACE_HUB_CACHE` 指向 `MODEL_CACHE_MOUNT_PATH`。
+
 ## 资源规划
 
 `TARGET_RESOURCE_COUNT` 不再手工填写。
@@ -91,8 +92,8 @@ target vLLM Pod 挂载：
 
 1. `master-controller` 启动。
 2. 读取 `/configs` 生成 `RunConfig`。
-3. 读取 `/model-metadata/config.json` 获取 `num_attention_heads`。
-4. 读取 `/model-metadata/model.safetensors.index.json` 获取模型权重大小。
+3. 使用 `MODEL_PATH` 作为 Hugging Face repo id 读取 `config.json`；如果 `MODEL_PATH` 是本地路径，则使用 `MODEL_NAME` 作为 repo id。
+4. 通过 Hugging Face model info 的 sibling size 汇总权重大小；如果 size 缺失，则读取远端 `model.safetensors.index.json` 或 `pytorch_model.bin.index.json`。
 5. 根据 `TARGET_GPU_MEMORY_GB` 估算 GPU 数量。
 6. 根据 GPU 数量和 attention heads 计算：
    - `--tensor-parallel-size`
@@ -111,7 +112,7 @@ target vLLM Pod 挂载：
 
 - `TP * PP == GPU_COUNT`
 - `num_attention_heads % TP == 0`
-- 缺少必要 metadata 时，Master Job 会直接失败。
+- `MODEL_PATH` 和 `MODEL_NAME` 都无法作为 Hugging Face repo id 查询时，Master Job 会直接失败。
 
 ## 模型加载和下载
 
@@ -122,15 +123,14 @@ target vLLM Pod 挂载：
 - 如果 `MODEL_PATH` 是容器内已有路径，vLLM 从本地加载。
 - 如果 `MODEL_PATH` 是 Hugging Face repo id，例如 `Qwen/Qwen2.5-0.5B-Instruct`，vLLM 可能在 target 容器启动时下载模型。
 
-当前 MVP 没有给 target Pod 单独挂载持久化模型缓存。因此：
+当前支持给 target Pod 单独挂载持久化模型目录或 Hugging Face cache。因此：
 
 - 模型已经在 target 镜像内：不会重新下载。
 - 模型路径是 target 容器可见的本地/共享挂载路径：不会重新下载。
-- 依赖 Hugging Face 在线下载，且没有持久化 cache：每次新 target Pod 都可能重新下载。
+- 依赖 Hugging Face 在线下载，且配置了 `MODEL_CACHE_HOST_PATH`：首次下载会落到宿主机 cache 目录，后续调度到同一节点并挂同一目录的 target Pod 会复用缓存。
+- 依赖 Hugging Face 在线下载，但没有配置持久化 cache：每次新 target Pod 都可能重新下载。
 
-由于每组 `serve_hparams` 会创建一个新的 target Pod，如果没有模型缓存，完整矩阵可能会触发多次下载。真实测试建议提前把模型放到 target 镜像、节点本地模型目录，或后续单独给 target Pod 增加模型/cache 挂载。
-
-注意：`MODEL_METADATA_HOST_PATH` 只解决资源规划读取 metadata，不等于 target vLLM 的模型权重缓存。
+由于每组 `serve_hparams` 会创建一个新的 target Pod，如果没有模型缓存，完整矩阵可能会触发多次下载。真实测试建议提前把模型放到 target 镜像、节点本地模型目录，或配置 `MODEL_CACHE_HOST_PATH`。
 
 ## 持久化目录
 
@@ -187,9 +187,6 @@ PERSIST_ROOT=/tmp/vllm-bench
 - `bench_hparams.smoke.json`
   - 更小的请求 smoke 矩阵。
 
-- `configs/model_metadata.example/`
-  - 本地示例 metadata 目录，只用于演示资源规划输入。
-
 关键 env：
 
 ```env
@@ -198,11 +195,16 @@ MASTER_IMAGE=vllm-bench-platform/master:local
 TARGET_VLLM_IMAGE=vllm/vllm-openai:v0.8.5
 TARGET_RESOURCE_NAME=nvidia.com/gpu
 TARGET_GPU_MEMORY_GB=8
-MODEL_METADATA_HOST_PATH=configs/model_metadata.example
 MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
 MODEL_NAME=Qwen2.5-0.5B-Instruct
 SERVED_MODEL_NAME=Qwen2.5-0.5B-Instruct
 DTYPE=float16
+MODEL_HOST_PATH=
+MODEL_MOUNT_PATH=
+MODEL_CACHE_HOST_PATH=/tmp/vllm-bench/model-cache
+MODEL_CACHE_MOUNT_PATH=/root/.cache/huggingface
+HF_ENDPOINT=https://huggingface.co
+HF_TOKEN=
 PERSIST_ROOT=/tmp/vllm-bench
 BENCH_BINARY=vllm-bench
 BENCH_TIMEOUT_SECONDS=600
@@ -289,7 +291,7 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
    ```
 
 3. Master Job 启动，不申请 GPU。
-4. Master 读取 `/model-metadata`，示例 metadata 估算结果为 1 张 GPU。
+4. Master 通过 Hugging Face API 读取模型元数据，估算结果为 1 张 GPU。
 5. Master 创建一个 target vLLM Pod，请求：
 
    ```yaml
@@ -318,4 +320,5 @@ python -m vllm_bench_platform.backend.cli failed-cases --env configs\enving.env 
 详细执行计划见 `docs/implementation-plan.md`。
 
 ## 额外 TODO
-模型挂载，防止每次都去Hugging Face重新下载。
+1. 错误处理，某一轮发生失败后，应该及时处理
+2. 获取指标信息，显存，能看到执行时的指标

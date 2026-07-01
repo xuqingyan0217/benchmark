@@ -43,7 +43,6 @@ class RuntimeEnvConfig:
     target_vllm_image: str
     target_resource_name: str
     target_gpu_memory_gb: float
-    model_metadata_host_path: str
     model_path: str
     served_model_name: str
     dtype: str
@@ -57,6 +56,12 @@ class RuntimeEnvConfig:
     model_name: str
     vendor_name: str
     pod_tolerations: list[dict[str, Any]]
+    model_host_path: str | None = None
+    model_mount_path: str | None = None
+    model_cache_host_path: str | None = None
+    model_cache_mount_path: str = "/root/.cache/huggingface"
+    hf_endpoint: str = "https://huggingface.co"
+    hf_token: str = ""
     health_path: str = "/health"
     target_port: int = 8000
 
@@ -71,7 +76,6 @@ def load_env_config(path: str | Path) -> RuntimeEnvConfig:
         target_vllm_image=_require(values, "TARGET_VLLM_IMAGE"),
         target_resource_name=_require(values, "TARGET_RESOURCE_NAME"),
         target_gpu_memory_gb=float(_require(values, "TARGET_GPU_MEMORY_GB")),
-        model_metadata_host_path=_require(values, "MODEL_METADATA_HOST_PATH"),
         model_path=_require(values, "MODEL_PATH"),
         served_model_name=served_model_name,
         dtype=_require(values, "DTYPE"),
@@ -85,6 +89,12 @@ def load_env_config(path: str | Path) -> RuntimeEnvConfig:
         model_name=values.get("MODEL_NAME", served_model_name),
         vendor_name=values.get("VENDOR_NAME", "local"),
         pod_tolerations=_read_json_list(values.get("POD_TOLERATIONS_JSON", "[]"), "POD_TOLERATIONS_JSON"),
+        model_host_path=_optional_value(values, "MODEL_HOST_PATH"),
+        model_mount_path=_optional_value(values, "MODEL_MOUNT_PATH"),
+        model_cache_host_path=_optional_value(values, "MODEL_CACHE_HOST_PATH"),
+        model_cache_mount_path=values.get("MODEL_CACHE_MOUNT_PATH", "/root/.cache/huggingface"),
+        hf_endpoint=values.get("HF_ENDPOINT", "https://huggingface.co"),
+        hf_token=values.get("HF_TOKEN", values.get("HUGGING_FACE_HUB_TOKEN", "")),
         health_path=values.get("HEALTH_PATH", "/health"),
         target_port=int(values.get("TARGET_PORT", "8000")),
     )
@@ -127,6 +137,10 @@ def build_payload_from_files(
             "served_model_name": env.served_model_name,
             "trust_remote_code": True,
             "dtype": env.dtype,
+            "model_host_path": env.model_host_path,
+            "model_mount_path": env.model_mount_path,
+            "model_cache_host_path": env.model_cache_host_path,
+            "model_cache_mount_path": env.model_cache_mount_path,
         },
     }
 
@@ -182,3 +196,8 @@ def _require(values: dict[str, str], name: str) -> str:
     if not value:
         raise ValueError(f"{name} 不能为空")
     return value
+
+
+def _optional_value(values: dict[str, str], name: str) -> str | None:
+    value = values.get(name, "").strip()
+    return value or None
