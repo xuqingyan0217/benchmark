@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 import unittest
 
-from vllm_bench_platform.backend.runtime_config import load_env_config
+from vllm_bench_platform.backend.runtime_config import build_payload_from_files, load_env_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +16,6 @@ class ConfigsAndManifestsTest(unittest.TestCase):
             ROOT / "configs" / "bench_hparams.json",
             ROOT / "configs" / "serve_hparams.smoke.json",
             ROOT / "configs" / "bench_hparams.smoke.json",
-            ROOT / "configs" / "vendor_profile.example.json",
-            ROOT / "configs" / "model_config.example.json",
         ]
 
         for path in expected:
@@ -88,13 +86,21 @@ class ConfigsAndManifestsTest(unittest.TestCase):
         self.assertEqual(bench["--random-output-len"], 16)
         self.assertEqual(bench["--request-rate"], 1)
 
-    def test_example_model_and_vendor_match_rtx4060_smoke_defaults(self):
-        model = json.loads((ROOT / "configs" / "model_config.example.json").read_text())
-        vendor = json.loads((ROOT / "configs" / "vendor_profile.example.json").read_text())
+    def test_env_renders_model_and_vendor_runtime_configs(self):
+        env = load_env_config(ROOT / "configs" / "enving.example.env")
+        payload = build_payload_from_files(
+            env,
+            ROOT / "configs" / "serve_hparams.smoke.json",
+            ROOT / "configs" / "bench_hparams.smoke.json",
+            run_id="run-001",
+        )
+        model = payload["model_config"]
+        vendor = payload["vendor_profile"]
 
         self.assertEqual(model["model_path"], "Qwen/Qwen2.5-0.5B-Instruct")
         self.assertEqual(model["model_name"], "Qwen2.5-0.5B-Instruct")
         self.assertEqual(model["served_model_name"], "Qwen2.5-0.5B-Instruct")
+        self.assertEqual(model["dtype"], "float16")
         self.assertEqual(vendor["target_vllm_image"], "vllm/vllm-openai:v0.8.5")
         self.assertEqual(vendor["resource_name"], "nvidia.com/gpu")
         self.assertEqual(vendor["resource_count"], 1)
