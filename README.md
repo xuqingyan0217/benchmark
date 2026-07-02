@@ -74,7 +74,8 @@ target vLLM Pod 挂载：
 
 - `/dev/shm`
   - 来源：memory emptyDir。
-  - 大小由 `vendor_profile.shm_size` 控制，默认 `16Gi`。
+  - 大小由 `SHM_SIZE` 控制，backend 会写入 `vendor_profile.shm_size`，默认 `16Gi`。
+  - 只挂到 target Pod，因为 target 负责运行 vLLM/PyTorch 和加载模型，可能需要共享内存；Master Pod 只做编排、调用 `kubectl` 和运行 `vllm-bench`，不加载模型，也不需要额外挂载 `/dev/shm`。
 
 - `MODEL_HOST_PATH -> MODEL_MOUNT_PATH`
   - 可选 hostPath，只读挂载完整模型目录。
@@ -201,6 +202,7 @@ TARGET_RESOURCE_NAME=nvidia.com/gpu
 TARGET_RESOURCE_COUNT=1
 TENSOR_PARALLEL_SIZE=1
 PIPELINE_PARALLEL_SIZE=1
+SHM_SIZE=16Gi
 MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct
 MODEL_NAME=Qwen2.5-0.5B-Instruct
 SERVED_MODEL_NAME=Qwen2.5-0.5B-Instruct

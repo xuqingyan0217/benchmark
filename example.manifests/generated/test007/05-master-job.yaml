@@ -1,0 +1,73 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-bench-master-test007
+  namespace: bench
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: vllm-bench-master
+        run_id: test007
+    spec:
+      restartPolicy: Never
+      serviceAccountName: vllm-bench-master
+      volumes:
+        -
+          name: configs
+          configMap:
+            name: vllm-bench-config-test007
+        -
+          name: results
+          persistentVolumeClaim:
+            claimName: vllm-bench-results-test007
+        -
+          name: work
+          emptyDir: {}
+      tolerations:
+        -
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        -
+          name: master-controller
+          image: vllm-bench-platform/master:local
+          command:
+            - python3
+            - -m
+            - vllm_bench_platform.master.master
+          env:
+            -
+              name: RUN_ID
+              value: test007
+            -
+              name: NAMESPACE
+              value: bench
+            -
+              name: BENCH_BINARY
+              value: vllm-bench
+            -
+              name: BENCH_TIMEOUT_SECONDS
+              value: "600"
+            -
+              name: BENCH_NUM_PROMPTS
+              value: "2"
+          volumeMounts:
+            -
+              name: configs
+              mountPath: /configs
+            -
+              name: results
+              mountPath: /results/test007
+            -
+              name: work
+              mountPath: /work
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

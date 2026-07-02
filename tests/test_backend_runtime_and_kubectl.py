@@ -36,6 +36,7 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
                         "TARGET_RESOURCE_COUNT=2",
                         "TENSOR_PARALLEL_SIZE=2",
                         "PIPELINE_PARALLEL_SIZE=1",
+                        "SHM_SIZE=12Gi",
                         "MODEL_PATH=/models/qwen",
                         "SERVED_MODEL_NAME=qwen",
                         "DTYPE=float16",
@@ -91,9 +92,11 @@ class BackendRuntimeAndKubectlTest(unittest.TestCase):
         self.assertEqual(env.target_resource_count, 2)
         self.assertEqual(env.tensor_parallel_size, 2)
         self.assertEqual(env.pipeline_parallel_size, 1)
+        self.assertEqual(env.shm_size, "12Gi")
         self.assertEqual(payload["vendor_profile"]["resource_count"], 2)
         self.assertEqual(payload["vendor_profile"]["tensor_parallel_size"], 2)
         self.assertEqual(payload["vendor_profile"]["pipeline_parallel_size"], 1)
+        self.assertEqual(payload["vendor_profile"]["shm_size"], "12Gi")
         self.assertEqual(payload["vendor_profile"]["env"]["HF_HUB_DISABLE_XET"], "1")
         self.assertEqual(
             payload["vendor_profile"]["tolerations"],

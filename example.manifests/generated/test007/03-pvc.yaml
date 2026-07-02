@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-bench-results-test007
+  namespace: bench
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  volumeName: vllm-bench-results-test007
+  resources:
+    requests:
+      storage: 20Gi

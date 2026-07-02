@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: vllm-bench-results-test007
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /tmp/vllm-bench/bench/test007
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: bench
+    name: vllm-bench-results-test007

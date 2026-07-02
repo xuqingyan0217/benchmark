@@ -1,0 +1,82 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-target-reference-run-s1-baseline
+  namespace: bench
+  labels:
+    app: vllm-bench-target
+    run_id: reference-run
+    serve_config: s1_baseline
+spec:
+  restartPolicy: Never
+  containers:
+    -
+      name: target-vllm
+      image: vllm/vllm-openai:v0.8.5
+      command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+      args:
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --model
+        - Qwen/Qwen2.5-0.5B-Instruct
+        - --served-model-name
+        - Qwen2.5-0.5B-Instruct
+        - --dtype
+        - float16
+        - --tensor-parallel-size
+        - "1"
+        - --pipeline-parallel-size
+        - "1"
+        - --trust-remote-code
+        - --max-num-seqs
+        - "16"
+        - --max-num-batched-tokens
+        - "32768"
+      ports:
+        -
+          containerPort: 8000
+          name: http
+      env:
+        -
+          name: HF_HUB_DISABLE_XET
+          value: "1"
+        -
+          name: HF_HOME
+          value: /root/.cache/huggingface
+        -
+          name: HUGGINGFACE_HUB_CACHE
+          value: /root/.cache/huggingface
+      resources:
+        requests:
+          "nvidia.com/gpu": 1
+        limits:
+          "nvidia.com/gpu": 1
+      volumeMounts:
+        -
+          name: dshm
+          mountPath: /dev/shm
+        -
+          name: model-cache
+          mountPath: /root/.cache/huggingface
+  volumes:
+    -
+      name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+    -
+      name: model-cache
+      hostPath:
+        path: /tmp/vllm-bench/model-cache
+        type: DirectoryOrCreate
+  tolerations:
+    -
+      key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule

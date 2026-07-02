@@ -43,6 +43,7 @@ class ConfigsAndManifestsTest(unittest.TestCase):
         self.assertEqual(config.target_resource_count, 1)
         self.assertEqual(config.tensor_parallel_size, 1)
         self.assertEqual(config.pipeline_parallel_size, 1)
+        self.assertEqual(config.shm_size, "16Gi")
         self.assertEqual(config.model_path, "Qwen/Qwen2.5-0.5B-Instruct")
         self.assertEqual(config.model_name, "Qwen2.5-0.5B-Instruct")
         self.assertEqual(config.served_model_name, "Qwen2.5-0.5B-Instruct")
@@ -106,6 +107,7 @@ class ConfigsAndManifestsTest(unittest.TestCase):
         self.assertEqual(vendor["resource_count"], 1)
         self.assertEqual(vendor["tensor_parallel_size"], 1)
         self.assertEqual(vendor["pipeline_parallel_size"], 1)
+        self.assertEqual(vendor["shm_size"], "16Gi")
 
     def test_dockerfiles_include_required_smoke_runtime_tools(self):
         master = (ROOT / "docker" / "Dockerfile.master").read_text()

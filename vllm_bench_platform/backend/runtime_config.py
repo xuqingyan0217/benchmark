@@ -16,6 +16,7 @@
 - `BENCH_TIMEOUT_SECONDS` 只约束单个 benchmark case，不代表整个 Master Job 超时策略。
 - `MASTER_MEMORY_*` 只影响 Master 容器，不能被误传给 target vLLM。
 - target vLLM 的 GPU 申请完全来自 vendor_profile 的 resource_name/resource_count。
+- target vLLM 的 `/dev/shm` 大小通过 `SHM_SIZE` 写入 vendor_profile.shm_size。
 - target vLLM 的额外环境变量通过 `TARGET_ENV_JSON` 传递。
 - `POD_TOLERATIONS_JSON` 同时给 Master Pod 和 target Pod 使用，适配单节点 control-plane taint。
 - `health_path` 和 `target_port` 进入 vendor_profile，确保 Service、health check、bench base-url 一致。
@@ -45,6 +46,7 @@ class RuntimeEnvConfig:
     target_resource_count: int
     tensor_parallel_size: int
     pipeline_parallel_size: int
+    shm_size: str
     model_path: str
     served_model_name: str
     dtype: str
@@ -78,6 +80,7 @@ def load_env_config(path: str | Path) -> RuntimeEnvConfig:
         target_resource_count=int(_require(values, "TARGET_RESOURCE_COUNT")),
         tensor_parallel_size=int(_require(values, "TENSOR_PARALLEL_SIZE")),
         pipeline_parallel_size=int(_require(values, "PIPELINE_PARALLEL_SIZE")),
+        shm_size=values.get("SHM_SIZE", "16Gi"),
         model_path=_require(values, "MODEL_PATH"),
         served_model_name=served_model_name,
         dtype=_require(values, "DTYPE"),
@@ -124,7 +127,7 @@ def build_payload_from_files(
             "node_selector": {},
             "tolerations": env.pod_tolerations,
             "runtime_class_name": None,
-            "shm_size": "16Gi",
+            "shm_size": env.shm_size,
             "port": env.target_port,
             "health_path": env.health_path,
             "extra_serve_args": [],
