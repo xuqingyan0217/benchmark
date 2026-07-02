@@ -1,0 +1,48 @@
+Pre-resolved vllm-target-test007-s2-med-concurrency -> [10.110.87.209]
+Loading tokenizer: Qwen2.5-0.5B-Instruct
+No tokenizer.json for 'Qwen2.5-0.5B-Instruct', trying tiktoken format...
+Tiktoken also not available (Tokenizer error: No tiktoken model file found for 'Qwen2.5-0.5B-Instruct'), trying server-side tokenization...
+Tokenizer: Server (vocab_size≈131072)
+Tokenizer loaded successfully.
+Generating 2 random prompts...
+Generated 2 prompts in 0.02s
+Tokenizer verified in previous run (cached), skipping verification.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1 (Poisson process)
+Maximum request concurrency: 2
+================= Serving Benchmark Result =================
+Successful requests:                     2         
+Failed requests:                         0         
+Benchmark duration (s):                  2.73      
+Total input tokens:                      2048      
+Total generated tokens:                  512       
+Request throughput (req/s):              0.73      
+Output token throughput (tok/s):         187.68    
+Peak output token throughput (tok/s):    202.00    
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          938.38    
+--------------------Time to First Token---------------------
+Mean TTFT (ms):                          51.67     
+Median TTFT (ms):                        51.67     
+P99 TTFT (ms):                           68.49     
+P90 TTFT (ms):                           65.40     
+----------Time per Output Token (excl. 1st token)-----------
+Mean TPOT (ms):                          10.48     
+Median TPOT (ms):                        10.48     
+P99 TPOT (ms):                           10.52     
+P90 TPOT (ms):                           10.52     
+--------------------Inter-token Latency---------------------
+Mean ITL (ms):                           10.48     
+Median ITL (ms):                         9.72      
+P99 ITL (ms):                            26.73     
+P90 ITL (ms):                            11.38     
+---------------------End-to-end Latency---------------------
+Mean E2EL (ms):                          2723.11   
+Median E2EL (ms):                        2723.11   
+P99 E2EL (ms):                           2727.63   
+P90 E2EL (ms):                           2726.80   
+============================================================
+Results saved to /results/test007/raw_json/s2_med_concurrency-b7_saturation.json
+
+Open-file limit: 1048576

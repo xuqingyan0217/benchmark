@@ -37,19 +37,11 @@ configs/vendor_profile.json
 configs/model_config.json
 
 # Benchmark/runtime outputs
-results/
 work/
 artifacts/
-raw_logs/
-raw_json/
 manifests/generated/
-summary.csv
-summary.jsonl
-failed_cases.jsonl
-best_config.json
 
 # Logs and temporary files
-*.log
 *.tmp
 *.bak
 *.swp

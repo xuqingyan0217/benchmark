@@ -1,0 +1,49 @@
+Pre-resolved vllm-target-test007-s4-low-concurrency -> [10.106.130.94]
+Loading tokenizer: Qwen2.5-0.5B-Instruct
+No tokenizer.json for 'Qwen2.5-0.5B-Instruct', trying tiktoken format...
+Tiktoken also not available (Tokenizer error: No tiktoken model file found for 'Qwen2.5-0.5B-Instruct'), trying server-side tokenization...
+Tokenizer: Server (vocab_size≈131072)
+Tokenizer loaded successfully.
+Generating 2 random prompts...
+Generated 2 prompts in 0.02s
+Tokenizer verified in previous run (cached), skipping verification.
+Starting main benchmark run...
+Traffic request rate: 4
+Burstiness factor: 1 (Poisson process)
+Maximum request concurrency: 2
+================= Serving Benchmark Result =================
+Successful requests:                     2         
+Failed requests:                         0         
+Request rate configured (RPS):           4.00      
+Benchmark duration (s):                  5.40      
+Total input tokens:                      4096      
+Total generated tokens:                  1024      
+Request throughput (req/s):              0.37      
+Output token throughput (tok/s):         189.72    
+Peak output token throughput (tok/s):    212.00    
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          948.59    
+--------------------Time to First Token---------------------
+Mean TTFT (ms):                          38.04     
+Median TTFT (ms):                        38.04     
+P99 TTFT (ms):                           49.41     
+P90 TTFT (ms):                           47.32     
+----------Time per Output Token (excl. 1st token)-----------
+Mean TPOT (ms):                          9.64      
+Median TPOT (ms):                        9.64      
+P99 TPOT (ms):                           9.75      
+P90 TPOT (ms):                           9.73      
+--------------------Inter-token Latency---------------------
+Mean ITL (ms):                           9.64      
+Median ITL (ms):                         9.30      
+P99 ITL (ms):                            15.42     
+P90 ITL (ms):                            10.56     
+---------------------End-to-end Latency---------------------
+Mean E2EL (ms):                          4963.20   
+Median E2EL (ms):                        4963.20   
+P99 E2EL (ms):                           5029.68   
+P90 E2EL (ms):                           5017.46   
+============================================================
+Results saved to /results/test007/raw_json/s4_low_concurrency-b5_med_prompt_med_qps.json
+
+Open-file limit: 1048576
